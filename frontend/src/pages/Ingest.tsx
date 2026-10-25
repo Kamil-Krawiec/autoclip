@@ -8,28 +8,58 @@ import {
   type Job,
   type JobSettingsOverrides,
   type ProviderStatus,
+  type Source,
 } from '../api'
 import { ErrorNote } from '../components/ErrorNote'
+
+type BusyKind = 'url' | 'file' | 'existing'
 
 export function Ingest() {
   const navigate = useNavigate()
   const [url, setUrl] = useState('')
-  const [busy, setBusy] = useState<'url' | 'file' | null>(null)
+  const [busy, setBusy] = useState<BusyKind | null>(null)
+  const busyRef = useRef(false)
   const [error, setError] = useState<ApiError | Error | null>(null)
   const [jobs, setJobs] = useState<Job[]>([])
+  const [sources, setSources] = useState<Source[]>([])
+  const [sourcesLoading, setSourcesLoading] = useState(true)
+  const [sourcesError, setSourcesError] = useState<string | null>(null)
+  const [selectedSourceId, setSelectedSourceId] = useState('')
   const [providers, setProviders] = useState<ProviderStatus[]>([])
   const [overrides, setOverrides] = useState<JobSettingsOverrides>({})
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [dragging, setDragging] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
 
+  const loadSources = useCallback(() => {
+    setSourcesLoading(true)
+    setSourcesError(null)
+    api
+      .listSources()
+      .then((list) => {
+        setSources(list)
+        setSelectedSourceId((prev) =>
+          prev && list.some((s) => s.id === prev) ? prev : (list[0]?.id ?? ''),
+        )
+      })
+      .catch((err) => {
+        setSourcesError(err instanceof Error ? err.message : 'Failed to load sources')
+      })
+      .finally(() => {
+        setSourcesLoading(false)
+      })
+  }, [])
+
   useEffect(() => {
     api.listJobs(8).then(setJobs).catch(() => undefined)
     api.providerStatus().then(setProviders).catch(() => undefined)
-  }, [])
+    loadSources()
+  }, [loadSources])
 
   const start = useCallback(
-    async (kind: 'url' | 'file', run: () => Promise<{ id: string }>) => {
+    async (kind: BusyKind, run: () => Promise<{ id: string }>) => {
+      if (busyRef.current) return
+      busyRef.current = true
       setBusy(kind)
       setError(null)
       try {
@@ -39,6 +69,7 @@ export function Ingest() {
       } catch (err) {
         setError(err as Error)
       } finally {
+        busyRef.current = false
         setBusy(null)
       }
     },
@@ -51,9 +82,22 @@ export function Ingest() {
     void start('url', () => api.ingestYouTube(url.trim()))
   }
 
-  const submitFile = (file: File) => void start('file', () => api.uploadSource(file))
+  const submitFile = (file: File) => {
+    if (busyRef.current) return
+    void start('file', () => api.uploadSource(file))
+  }
+
+  const submitExisting = (event: React.FormEvent) => {
+    event.preventDefault()
+    if (!selectedSourceId) return
+    void start('existing', () => Promise.resolve({ id: selectedSourceId }))
+  }
 
   const usableProvider = providers.find((p) => p.available)
+  const recentDoneJobForSelected = selectedSourceId
+    ? jobs.find((j) => j.source_id === selectedSourceId && j.status === 'done')
+    : undefined
+  const isBusy = busy !== null
 
   return (
     <div className="pt-14">
@@ -84,12 +128,12 @@ export function Ingest() {
                 onChange={(e) => setUrl(e.target.value)}
                 autoComplete="off"
                 spellCheck={false}
-                disabled={busy !== null}
+                disabled={isBusy}
               />
               <button
                 type="submit"
                 className="btn btn-primary shrink-0"
-                disabled={busy !== null || !url.trim()}
+                disabled={isBusy || !url.trim()}
               >
                 {busy === 'url' ? 'Fetching…' : 'Start'}
               </button>
@@ -99,6 +143,68 @@ export function Ingest() {
           <p className="mt-3 text-xs leading-relaxed text-ink-500">
             Only download video you own or have the rights to process.
           </p>
+
+          <div className="mt-8 border-t border-ink-850 pt-6">
+            <form onSubmit={submitExisting}>
+              <label htmlFor="existing-source" className="eyebrow">
+                Existing source
+              </label>
+              {sourcesLoading ? (
+                <p className="mt-3 text-xs text-ink-500">Loading saved sources…</p>
+              ) : sourcesError ? (
+                <div className="mt-3 flex items-center gap-3 text-xs text-signal-bad">
+                  <span>Could not load saved sources ({sourcesError}).</span>
+                  <button
+                    type="button"
+                    onClick={loadSources}
+                    disabled={isBusy}
+                    className="btn btn-quiet text-xs"
+                  >
+                    Retry
+                  </button>
+                </div>
+              ) : sources.length === 0 ? (
+                <p className="mt-3 text-xs text-ink-500">No saved sources yet.</p>
+              ) : (
+                <>
+                  <div className="mt-3 flex flex-wrap items-end gap-4">
+                    <select
+                      id="existing-source"
+                      value={selectedSourceId}
+                      onChange={(e) => setSelectedSourceId(e.target.value)}
+                      disabled={isBusy}
+                      className="field min-w-0 flex-1 cursor-pointer text-sm"
+                    >
+                      {sources.map((source) => (
+                        <option key={source.id} value={source.id} className="bg-ink-850">
+                          {source.title || source.filename || 'Untitled'} (
+                          {formatDuration(source.duration_s)})
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="submit"
+                      className="btn btn-primary shrink-0"
+                      disabled={isBusy || !selectedSourceId}
+                    >
+                      {busy === 'existing' ? 'Starting…' : 'Process again'}
+                    </button>
+                  </div>
+                  {recentDoneJobForSelected && (
+                    <p className="mt-3 text-xs text-ink-400">
+                      Recent completed analysis available:{' '}
+                      <a
+                        href={`/jobs/${recentDoneJobForSelected.id}/clips`}
+                        className="text-sodium-500 underline underline-offset-4"
+                      >
+                        Open clips
+                      </a>
+                    </p>
+                  )}
+                </>
+              )}
+            </form>
+          </div>
 
           <AdvancedOptions
             open={advancedOpen}
@@ -115,26 +221,35 @@ export function Ingest() {
           <div
             onDragOver={(e) => {
               e.preventDefault()
-              setDragging(true)
+              if (!isBusy && !busyRef.current) setDragging(true)
             }}
             onDragLeave={() => setDragging(false)}
             onDrop={(e) => {
               e.preventDefault()
               setDragging(false)
+              if (isBusy || busyRef.current) return
               const file = e.dataTransfer.files[0]
               if (file) submitFile(file)
             }}
             className={[
-              'mt-3 flex min-h-52 cursor-pointer flex-col items-center justify-center gap-2 border border-dashed px-6 text-center transition-colors duration-200',
+              'mt-3 flex min-h-52 flex-col items-center justify-center gap-2 border border-dashed px-6 text-center transition-colors duration-200',
+              isBusy ? 'cursor-not-allowed opacity-60' : 'cursor-pointer',
               dragging
                 ? 'border-sodium-500 bg-sodium-700/10'
                 : 'border-ink-700 hover:border-ink-600',
             ].join(' ')}
-            onClick={() => fileInput.current?.click()}
+            onClick={() => {
+              if (!isBusy && !busyRef.current) fileInput.current?.click()
+            }}
             role="button"
-            tabIndex={0}
+            tabIndex={isBusy ? -1 : 0}
+            aria-disabled={isBusy}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') fileInput.current?.click()
+              if (isBusy || busyRef.current) return
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                fileInput.current?.click()
+              }
             }}
           >
             <span className="font-display text-2xl text-ink-200">
@@ -147,7 +262,9 @@ export function Ingest() {
             type="file"
             className="hidden"
             accept="video/*,audio/*"
+            disabled={isBusy}
             onChange={(e) => {
+              if (isBusy || busyRef.current) return
               const file = e.target.files?.[0]
               if (file) submitFile(file)
               e.target.value = ''

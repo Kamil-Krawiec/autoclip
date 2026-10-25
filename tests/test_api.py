@@ -8,13 +8,15 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Iterator
+from unittest.mock import Mock
 
 import pytest
 from autoclip import app as app_module
 from autoclip import config
 from autoclip.app import create_app
 from autoclip.db import store
-from autoclip.db.models import Clip, Job, Source, new_id
+from autoclip.db.models import Clip, ClipEdit, Export, Job, Source, new_id
+from autoclip.pipeline import ingest
 from fastapi.testclient import TestClient
 
 
@@ -207,6 +209,80 @@ class TestJobs:
         response = client.post("/api/jobs", json={"source_id": "nope"})
 
         assert response.status_code == 404
+
+    def test_reprocess_source_preserves_previous_job_and_edits(
+        self, client: TestClient, source: Source, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        previous = store.create_job(
+            Job(
+                id=new_id(),
+                source_id=source.id,
+                status="done",
+                progress=1.0,
+                provider="anthropic",
+                settings={"clips": {"max_clips": 10}},
+            )
+        )
+        clip = Clip(
+            id=new_id(),
+            job_id=previous.id,
+            start_s=10.0,
+            end_s=40.0,
+            title="Edited clip",
+            status="exported",
+            user_trimmed=True,
+        )
+        store.replace_clips(previous.id, [clip])
+        edit = store.upsert_clip_edit(
+            ClipEdit(
+                clip_id=clip.id,
+                caption_style="clean_lower",
+                ratio="1:1",
+                edited_words=[{"text": "Poprawione", "start": 10.0, "end": 10.5}],
+            )
+        )
+        export = store.create_export(
+            Export(
+                id=new_id(),
+                clip_id=clip.id,
+                path="saved.mp4",
+                ratio="1:1",
+                style="clean_lower",
+                size_bytes=1234,
+            )
+        )
+        previous_response = client.get(f"/api/jobs/{previous.id}").json()
+        previous_clips = client.get(f"/api/jobs/{previous.id}/clips").json()
+        ingest_file = Mock(side_effect=AssertionError("Source must be reused without ingest"))
+        ingest_youtube = Mock(side_effect=AssertionError("Source must be reused without ingest"))
+        monkeypatch.setattr(ingest, "ingest_file", ingest_file)
+        monkeypatch.setattr(ingest, "ingest_youtube", ingest_youtube)
+
+        response = client.post(
+            "/api/jobs",
+            json={"source_id": source.id, "settings": {"provider": "ollama", "max_clips": 3}},
+        )
+
+        assert response.status_code == 201
+        created = store.get_job(response.json()["id"])
+        assert created is not None
+        assert created.id != previous.id
+        assert created.source_id == previous.source_id == source.id
+        assert created.status == "queued"
+        assert created.provider == "ollama"
+        assert created.settings["clips"]["max_clips"] == 3
+        assert {job["id"] for job in client.get("/api/jobs").json()} == {previous.id, created.id}
+        assert store.get_source(source.id) == source
+        assert store.get_job(previous.id) == previous
+        assert store.list_clips(previous.id) == [clip]
+        assert store.get_clip_edit(clip.id) == edit
+        assert store.list_exports(clip.id) == [export]
+        assert client.get(f"/api/jobs/{previous.id}").json() == previous_response
+        assert client.get(f"/api/jobs/{previous.id}/clips").json() == previous_clips
+        assert client.get(f"/api/clips/{clip.id}/words").json()[0]["text"] == "Poprawione"
+        assert client.get(f"/api/jobs/{created.id}/clips").json() == []
+        ingest_file.assert_not_called()
+        ingest_youtube.assert_not_called()
 
     def test_inverted_durations_are_rejected(self, client: TestClient, source: Source) -> None:
         response = client.post(
