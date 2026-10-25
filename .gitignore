@@ -48,3 +48,6 @@ desktop.ini
 .env
 .env.*
 !.env.example
+
+# Markdown notes and agent progress stay local.
+*.[mM][dD]

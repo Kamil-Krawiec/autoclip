@@ -46,7 +46,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY pyproject.toml README.md LICENSE ./
+COPY pyproject.toml README LICENSE ./
 COPY backend/ ./backend/
 COPY --from=frontend /backend/autoclip/static ./backend/autoclip/static
 

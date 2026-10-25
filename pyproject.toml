@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "autoclip"
 version = "0.1.0.dev0"
 description = "Open-source, local-first AI video clipper — long video in, caption-burned 9:16 clips out."
-readme = "README.md"
+readme = { file = "README", content-type = "text/markdown" }
 license = { file = "LICENSE" }
 authors = [{ name = "Jad Ghazi" }]
 keywords = ["video", "shorts", "clips", "whisper", "ffmpeg", "captions", "tiktok", "reels"]
@@ -104,7 +104,7 @@ artifacts = ["backend/autoclip/static/**"]
 [tool.hatch.build.targets.sdist]
 # The compiled UI lands in backend/autoclip/static (see frontend/vite.config.ts),
 # so it travels with the package rather than needing a separate include.
-include = ["backend/autoclip", "frontend", "docs", "README.md", "LICENSE"]
+include = ["backend/autoclip", "frontend", "README", "LICENSE"]
 exclude = ["frontend/node_modules", "frontend/dist"]
 
 [tool.ruff]
