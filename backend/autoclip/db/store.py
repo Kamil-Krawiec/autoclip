@@ -329,12 +329,15 @@ def upsert_clip_edit(edit: ClipEdit) -> ClipEdit:
     with connection() as conn:
         conn.execute(
             """
-            INSERT INTO clip_edits (clip_id, edited_words_json, caption_style, ratio, updated_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO clip_edits (clip_id, edited_words_json, caption_style, ratio,
+                                    burn_captions, framing_json, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(clip_id) DO UPDATE SET
                 edited_words_json = excluded.edited_words_json,
                 caption_style = excluded.caption_style,
                 ratio = excluded.ratio,
+                burn_captions = excluded.burn_captions,
+                framing_json = excluded.framing_json,
                 updated_at = excluded.updated_at
             """,
             (
@@ -342,10 +345,42 @@ def upsert_clip_edit(edit: ClipEdit) -> ClipEdit:
                 json.dumps(edit.edited_words) if edit.edited_words is not None else None,
                 edit.caption_style,
                 edit.ratio,
+                edit.burn_captions,
+                json.dumps(edit.framing) if edit.framing is not None else None,
                 utcnow(),
             ),
         )
     return edit
+
+
+def patch_clip_edit(clip_id: str, changes: dict[str, Any]) -> ClipEdit:
+    """Update only supplied sections, acquiring the write lock before any reads."""
+    columns = {
+        "edited_words": "edited_words_json",
+        "caption_style": "caption_style",
+        "ratio": "ratio",
+        "burn_captions": "burn_captions",
+        "framing": "framing_json",
+    }
+    values = {
+        columns[key]: (
+            json.dumps(value) if key in {"edited_words", "framing"} and value is not None else value
+        )
+        for key, value in changes.items()
+    }
+    values["updated_at"] = utcnow()
+    with connection() as conn:
+        conn.execute(
+            "INSERT INTO clip_edits (clip_id, updated_at) VALUES (?, ?) "
+            "ON CONFLICT(clip_id) DO NOTHING",
+            (clip_id, values["updated_at"]),
+        )
+        assignments = ", ".join(f"{name} = ?" for name in values)
+        conn.execute(
+            f"UPDATE clip_edits SET {assignments} WHERE clip_id = ?", (*values.values(), clip_id)
+        )
+        row = conn.execute("SELECT * FROM clip_edits WHERE clip_id = ?", (clip_id,)).fetchone()
+    return ClipEdit.from_row(row)
 
 
 def get_clip_edit(clip_id: str) -> ClipEdit | None:

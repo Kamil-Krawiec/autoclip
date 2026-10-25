@@ -414,3 +414,93 @@ def _frame_signature(video: Path, timestamp: float) -> str:
         check=True,
     )
     return result.stdout.strip()
+
+
+def test_resolved_fit_off_preserves_corners_audio_and_duration(tmp_path):
+    from autoclip.db.models import Clip, ClipEdit, Job, Source
+    from autoclip.pipeline.framing import resolve_crop_path
+
+    source_path = tmp_path / "corners.mp4"
+    subprocess.run(
+        [
+            ffmpeg.ffmpeg_path(),
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=black:size=1280x720:rate=15:duration=1",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=1",
+            "-vf",
+            "drawbox=x=0:y=0:w=80:h=80:color=red:t=fill,drawbox=x=1200:y=0:w=80:h=80:color=green:t=fill,drawbox=x=0:y=640:w=80:h=80:color=blue:t=fill,drawbox=x=1200:y=640:w=80:h=80:color=yellow:t=fill",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-shortest",
+            str(source_path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    source = Source(id="s", type="upload", path=str(source_path), width=1280, height=720)
+    clip = Clip(id="c", job_id="j", start_s=0, end_s=1)
+    edit = ClipEdit(clip_id="c", burn_captions=False, framing={"mode": "fit"})
+    crop_path = resolve_crop_path(source, clip, Job(id="j", source_id="s"), edit, None)
+    destination = tmp_path / "fit-off.mp4"
+    request = export.ExportRequest(
+        source=source_path,
+        destination=destination,
+        start_s=0,
+        end_s=1,
+        crop_path=crop_path,
+        words=[Word(text="Niewidoczne", start=0, end=1)],
+        style=captions.get_style("bold_pop"),
+        burn_captions=edit.burn_captions,
+    )
+    assert "ass=" not in export.build_video_filtergraph(request, subtitle_name="captions.ass")
+    export.export_clip(
+        request, work_dir=tmp_path / "work", settings=ExportSettings(prefer_hardware_encoder=False)
+    )
+    info = ffmpeg.probe(destination)
+    assert (info.width, info.height) == (1080, 1920)
+    assert info.has_audio and info.duration_s == pytest.approx(1, abs=0.15)
+    frame = subprocess.run(
+        [
+            ffmpeg.ffmpeg_path(),
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(destination),
+            "-frames:v",
+            "1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-",
+        ],
+        check=True,
+        capture_output=True,
+    ).stdout
+
+    def pixel(x, y):
+        offset = (y * 1080 + x) * 3
+        return tuple(frame[offset : offset + 3])
+
+    red, green, blue, yellow = [
+        pixel(x, y) for x, y in [(16, 672), (1064, 672), (16, 1248), (1064, 1248)]
+    ]
+    assert red[0] > 150 and red[1] < 50 and red[2] < 50
+    assert green[1] > 70 and green[0] < 50 and green[2] < 50
+    assert blue[2] > 150 and blue[0] < 50 and blue[1] < 50
+    assert yellow[0] > 150 and yellow[1] > 150 and yellow[2] < 50
+    assert not list((tmp_path / "work").rglob("*.ass"))

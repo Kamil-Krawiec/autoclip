@@ -275,3 +275,35 @@ class TestTranscriptsEditsAndExports:
         store.create_export(Export(id=new_id(), clip_id=clip.id, path="out_1x1.mp4", ratio="1:1"))
 
         assert len(store.list_exports(clip.id)) == 2
+
+
+def test_v1_edit_migration_preserves_data_and_reopens(tmp_path):
+    from autoclip.db.schema import _migration_v1, migrate
+
+    target = tmp_path / "legacy.db"
+    conn = db.connect(target)
+    _migration_v1(conn)
+    conn.execute("PRAGMA user_version = 1")
+    conn.execute(
+        "INSERT INTO sources(id,type,path,created_at) VALUES ('s','upload','old.mp4','now')"
+    )
+    conn.execute(
+        "INSERT INTO jobs(id,source_id,status,created_at,updated_at) "
+        "VALUES ('j','s','done','now','now')"
+    )
+    conn.execute("INSERT INTO clips(id,job_id,start_s,end_s,created_at) VALUES ('c','j',0,5,'now')")
+    conn.execute("INSERT INTO clip_edits VALUES ('c','[]','clean_lower','1:1','now')")
+    conn.execute("INSERT INTO exports(id,clip_id,path,created_at) VALUES ('e','c','old.mp4','now')")
+    conn.commit()
+    assert migrate(conn) == 2
+    assert migrate(conn) == 2
+    conn.close()
+    conn = db.connect(target)
+    try:
+        edit = ClipEdit.from_row(conn.execute("SELECT * FROM clip_edits").fetchone())
+        assert edit.edited_words == []
+        assert edit.caption_style == "clean_lower" and edit.ratio == "1:1"
+        assert edit.burn_captions is True and edit.framing is None
+        assert conn.execute("SELECT path FROM exports").fetchone()[0] == "old.mp4"
+    finally:
+        conn.close()

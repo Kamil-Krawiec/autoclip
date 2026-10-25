@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -12,10 +13,11 @@ from fastapi.responses import FileResponse
 from .. import paths
 from ..config import load as load_settings
 from ..db import store
-from ..db.models import Export, new_id
+from ..db.models import ClipEdit, Export, new_id
 from ..pipeline import captions as captions_module
 from ..pipeline import export as export_module
-from ..pipeline.reframe.croppath import CropPath, centre_crop
+from ..pipeline.framing import resolve_crop_path
+from ..pipeline.reframe.croppath import CropPath
 from ..pipeline.runner import JobWorkspace
 from ..pipeline.transcript import Transcript, Word
 from .schemas import (
@@ -23,6 +25,7 @@ from .schemas import (
     CaptionStyleOut,
     ClipOut,
     ClipPatchIn,
+    EditPatchIn,
     ExportOut,
     ExportRequestIn,
     WordOut,
@@ -67,8 +70,12 @@ async def clip_words(clip_id: str) -> list[WordOut]:
         raise HTTPException(status_code=404, detail="Clip not found.")
 
     edit = await asyncio.to_thread(store.get_clip_edit, clip_id)
-    if edit is not None and edit.edited_words:
-        return [WordOut(**word) for word in edit.edited_words]
+    if edit is not None and edit.edited_words is not None:
+        return [
+            WordOut(**word)
+            for word in edit.edited_words
+            if word["end"] > clip.start_s and word["start"] < clip.end_s
+        ]
 
     transcript = await asyncio.to_thread(_load_transcript, clip.job_id)
     words = transcript.slice(clip.start_word, clip.end_word)
@@ -88,13 +95,14 @@ async def clip_crop_path(clip_id: str) -> dict:
     if clip is None:
         raise HTTPException(status_code=404, detail="Clip not found.")
 
-    cached = JobWorkspace(clip.job_id).crop_path(clip.id)
-    if not cached.exists():
-        # Audio-only sources and pre-reframe jobs legitimately have none; the
-        # client falls back to a centre crop.
-        raise HTTPException(status_code=404, detail="No crop path for this clip yet.")
-
-    return (await asyncio.to_thread(CropPath.load, cached)).to_dict()
+    job = await asyncio.to_thread(store.get_job, clip.job_id)
+    source = await asyncio.to_thread(store.get_source, job.source_id) if job else None
+    if job is None or source is None:
+        raise HTTPException(status_code=404, detail="The clip's source is missing.")
+    edit = await asyncio.to_thread(store.get_clip_edit, clip_id) or ClipEdit(clip_id=clip_id)
+    return (
+        await asyncio.to_thread(_crop_path_for, JobWorkspace(clip.job_id), clip, source, job, edit)
+    ).to_dict()
 
 
 @router.patch("/clips/{clip_id}", response_model=ClipOut)
@@ -144,27 +152,32 @@ async def patch_captions(clip_id: str, payload: CaptionPatchIn) -> ClipOut:
     if clip is None:
         raise HTTPException(status_code=404, detail="Clip not found.")
 
+    return await _save_edit(clip, payload)
+
+
+@router.patch("/clips/{clip_id}/edit", response_model=ClipOut)
+async def patch_edit(clip_id: str, payload: EditPatchIn) -> ClipOut:
+    clip = await asyncio.to_thread(store.get_clip, clip_id)
+    if clip is None:
+        raise HTTPException(status_code=404, detail="Clip not found.")
+    return await _save_edit(clip, payload)
+
+
+async def _save_edit(clip, payload: CaptionPatchIn) -> ClipOut:
     if payload.caption_style is not None:
         try:
             captions_module.get_style(payload.caption_style)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    existing = await asyncio.to_thread(store.get_clip_edit, clip_id)
-    from ..db.models import ClipEdit
-
-    edit = ClipEdit(
-        clip_id=clip_id,
-        edited_words=(
-            [w.model_dump() for w in payload.words]
-            if payload.words is not None
-            else (existing.edited_words if existing else None)
-        ),
-        caption_style=payload.caption_style or (existing.caption_style if existing else "bold_pop"),
-        ratio=payload.ratio or (existing.ratio if existing else "9:16"),
-    )
-    await asyncio.to_thread(store.upsert_clip_edit, edit)
-
+    changes = payload.model_dump(exclude_unset=True)
+    changes = {
+        key: value for key, value in changes.items() if value is not None or key == "framing"
+    }
+    if "words" in changes:
+        changes["edited_words"] = changes.pop("words")
+    if (changes.get("framing") or {}).get("mode") == "auto":
+        changes["framing"] = None
+    await asyncio.to_thread(store.patch_clip_edit, clip.id, changes)
     return await asyncio.to_thread(_clip_out, clip)
 
 
@@ -180,8 +193,12 @@ async def export_clip(clip_id: str, payload: ExportRequestIn) -> ExportOut:
     if job is None or source is None:
         raise HTTPException(status_code=404, detail="The clip's source is missing.")
 
+    edit = await asyncio.to_thread(store.get_clip_edit, clip_id) or ClipEdit(clip_id=clip_id)
+    ratio = payload.ratio or edit.ratio
     try:
-        style = captions_module.get_style(payload.style)
+        style = captions_module.get_style(
+            payload.style if payload.style is not None else edit.caption_style
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -194,12 +211,16 @@ async def export_clip(clip_id: str, payload: ExportRequestIn) -> ExportOut:
     settings.export.write_srt = payload.write_srt
 
     workspace = JobWorkspace(clip.job_id)
-    crop_path = await asyncio.to_thread(_crop_path_for, workspace, clip, source, payload.ratio)
+    crop_path = await asyncio.to_thread(
+        _crop_path_for, workspace, clip, source, job, replace(edit, ratio=ratio)
+    )
+    export_id = new_id()
 
     destination = (
         paths.exports_dir()
         / clip.job_id
-        / export_module.output_filename(clip.title or f"clip-{clip.rank}", payload.ratio)
+        / export_id
+        / export_module.output_filename(clip.title or f"clip-{clip.rank}", ratio)
     )
 
     request = export_module.ExportRequest(
@@ -210,24 +231,25 @@ async def export_clip(clip_id: str, payload: ExportRequestIn) -> ExportOut:
         crop_path=crop_path,
         words=words,
         style=style,
-        ratio=payload.ratio,
+        ratio=ratio,
+        burn_captions=edit.burn_captions,
     )
 
     try:
         await asyncio.to_thread(
             export_module.export_clip,
             request,
-            work_dir=workspace.captions_dir,
+            work_dir=workspace.captions_dir / export_id,
             settings=settings.export,
         )
     except export_module.ExportError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     record = Export(
-        id=new_id(),
+        id=export_id,
         clip_id=clip_id,
         path=str(destination),
-        ratio=payload.ratio,
+        ratio=ratio,
         style=style.key,
         size_bytes=destination.stat().st_size,
     )
@@ -306,21 +328,7 @@ def _load_transcript(job_id: str) -> Transcript:
     return Transcript.load(workspace.transcript)
 
 
-def _crop_path_for(workspace: JobWorkspace, clip, source, ratio: str) -> CropPath:
-    """Reuse the job's cached crop path, falling back to a centre crop.
-
-    A re-export at a different ratio can't reuse a path computed for the
-    original one, so the geometry is recomputed rather than stretched.
-    """
+def _crop_path_for(workspace: JobWorkspace, clip, source, job, edit: ClipEdit) -> CropPath:
     cached = workspace.crop_path(clip.id)
-    if cached.exists() and ratio == "9:16":
-        return CropPath.load(cached)
-
-    aspect = {"9:16": (9, 16), "1:1": (1, 1), "16:9": (16, 9)}[ratio]
-    return centre_crop(
-        source.width or 1920,
-        source.height or 1080,
-        clip.end_s - clip.start_s,
-        aspect_w=aspect[0],
-        aspect_h=aspect[1],
-    )
+    path = CropPath.load(cached) if cached.exists() else None
+    return resolve_crop_path(source, clip, job, edit, path)
