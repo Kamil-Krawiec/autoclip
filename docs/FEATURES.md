@@ -1,6 +1,6 @@
 # AutoClip — stan funkcji
 
-Audyt 2026-10-25, baza `5d0eac36fa615b79dd2104083bf273a96f8d68bb`.
+Audyt 2026-10-25, baza `5d0eac36fa615b79dd2104083bf273a96f8d68bb`; aktualizacja M1.
 „Istnieje” oznacza obecność w kodzie; zakres wykonanych testów jest w handoffie.
 
 | Obszar | Istnieje | Brakuje / następna zmiana |
@@ -8,8 +8,8 @@ Audyt 2026-10-25, baza `5d0eac36fa615b79dd2104083bf273a96f8d68bb`.
 | Pipeline | FastAPI, SQLite, kolejka FIFO w procesie, SSE, etapy i artefakty wznowienia | Zachować; nie przepisywać selekcji i transkrypcji |
 | Transkrypcja i selekcja | faster-whisper, opcjonalny WhisperX, indeksy słów LLM, refinement granic, adapter OpenAI-compatible | Test live DeepSeek tylko świadomie, poza baseline |
 | Upload | `UploadFile`, odczyty po 4 MiB do stagingu, walidacja suffix i ffprobe | Postęp bajtów, cancel, limity dysku/rozmiaru, audyt multipart spooling i sprzątania |
-| Istniejące materiały | `GET /api/sources`, `POST /api/jobs` przyjmuje istniejący `source_id` | Wybór źródła w UI i nowa analiza bez ponownego uploadu |
-| Historia | SQLite sources/jobs/clips/edits/exports, lista 8 ostatnich zadań w Ingest | Wygodne rozróżnienie „otwórz edycję” i „analizuj ponownie”; później paginacja |
+| Istniejące materiały | Existing source w UI, Process again używa `source_id` i bieżących ustawień bez uploadu; loading/error/retry/empty | Paginacja po przekroczeniu domyślnych 50 źródeł |
+| Historia | SQLite sources/jobs/clips/edits/exports; Open clips dla wybranego źródła w 8 ostatnich zadaniach; lista Recent | Pełna przeszukiwalna historia i paginacja |
 | Biblioteka lokalna | Compose montuje `/media:ro`; CLI potrafi ingest pliku | Bezpieczne API i UI przeglądania; obecny `ingest_file` kopiuje plik |
 | Napisy | 4 presety: Bold Pop, Karaoke Fill, Clean Lower, Boxed; korekta słów, zapis stylu i ratio | Parametry wyglądu, drag pozycji, zapis ON/OFF |
 | ASS | `CaptionStyle`, animacje none/scale/karaoke, fonty Anton/Inter | Udostępnić kontrolowane nadpisania; nie dublować katalogu presetów |

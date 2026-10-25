@@ -39,7 +39,7 @@ pojemności na integrację jako heurystykę, jeśli limit daje się zmierzyć.
 | Etap / branch | Właściciel | Zależności | Trudność | Stan |
 |---|---|---|---|---|
 | M0 `docs/editor-orchestration-plan` | koordynator + audyt Argon | brak | mała | audyt i przygotowanie |
-| M1 `feat/source-reuse` | Argon | M0 | mała | plan |
+| M1 `feat/source-reuse` | Argon + testy/review Codex, QA OpenCode | M0 | mała | ukończone i zweryfikowane |
 | M2 `feat/clip-edit-state` | Argon; wyłączny właściciel modeli | M1 | średnia | plan |
 | M3 `feat/fit-preview` | Argon | M2 | średnia | plan |
 | U1 `feat/upload-progress` | Flash lub Argon | M1; bez zmian modeli edycji | średnia | plan |
@@ -80,13 +80,18 @@ korekta; po powtórnym niepowodzeniu checkpoint i zmiana podejścia.
 **Wynik:** wybór „Existing source”, „Open clips” i „Process again”. Nowy job
 odwołuje się do tego samego source; edycja istniejącego klipu nie wywołuje LLM.
 
-- [ ] Dodaj test `test_reprocess_source_preserves_previous_job_and_edits`:
+- [x] Dodaj test `test_reprocess_source_preserves_previous_job_and_edits`:
   dwa różne job ID, ten sam source ID, stare ClipEdit i exports nadal dostępne.
-- [ ] Dodaj test brakującego source ID (404); jeżeli sprawdzasz obecność pliku,
+- [x] Zachowaj istniejący test brakującego source ID (404); jeżeli sprawdzasz obecność pliku,
   przygotuj prawdziwy mały plik w fixture, nie zmieniaj globalnie kontraktu testów.
-- [ ] Udostępnij listę zapisanych źródeł i rozdziel otwarcie klipów od nowej analizy.
-- [ ] Odśwież stronę i ponownie otwórz poprzedni job; sprawdź zachowanie ustawień.
-- [ ] Uruchom `pytest tests/test_api.py tests/test_db.py -q` i frontend build.
+- [x] Udostępnij listę zapisanych źródeł i rozdziel otwarcie klipów od nowej analizy.
+- [x] Odśwież stronę i ponownie otwórz poprzedni job; sprawdź zachowanie ustawień.
+- [x] Uruchom `pytest tests/test_api.py tests/test_db.py -q` i frontend build.
+
+Dowody M1: 70 testów API/DB w worktree; po integracji 277 unit/API, Ruff i build
+PASS. `tests/browser_source_reuse.cjs`: Firefox PASS, 1 POST jobs/0 ingest,
+zachowanie poprzednich edycji, loading/error/retry/empty i brak page errors.
+Review Codexa nie znalazło usterek. Testy nie wykonują rzeczywistej analizy AI.
 
 **Akceptacja:** ponowna analiza bez transferu pliku, stary projekt nienaruszony.
 **Ryzyko:** nowy job ponawia kosztowne etapy; współdzielenie cache między jobami
