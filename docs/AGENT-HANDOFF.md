@@ -4,7 +4,11 @@ Stan: 2026-10-25. Baza upstream `5d0eac36fa615b79dd2104083bf273a96f8d68bb`.
 Fork: https://github.com/Kamil-Krawiec/autoclip (potwierdzony GitHub API).
 Origin = fork, upstream = artbyjazi/autoclip. Lokalna gałąź: `feat/source-reuse`.
 Fundament dokumentacji zapisany w `d62f0f3`, implementacja M1 w `f974fb1`.
-Commity są lokalne; nie wykonano push ani merge do main.
+Gałąź wypchnięta do forka; PR: https://github.com/Kamil-Krawiec/autoclip/pull/1.
+Merge do main zatwierdzony przez użytkownika wyłącznie po zielonych testach PR.
+Obecnie oczekujemy na CI; nie wykonano merge. W nowym forku Actions wymagało
+ponownego zapisania istniejącego ustawienia enabled=true, aby zarejestrować CI.
+Nie rozszerzono uprawnień GITHUB_TOKEN (pozostają read-only).
 Checkpoint z patchami, raportami i screenshotem:
 `~/.local/state/cost-orchestrator/autoclip-639be96f97/20261025-m1-source-reuse/`.
 
