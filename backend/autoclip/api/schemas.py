@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..db import models
 
@@ -136,6 +136,11 @@ class ExportOut(BaseModel):
         )
 
 
+class FramingIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["auto", "fit"]
+
+
 class ClipOut(BaseModel):
     id: str
     job_id: str
@@ -153,6 +158,8 @@ class ClipOut(BaseModel):
     user_trimmed: bool
     caption_style: str = "bold_pop"
     ratio: str = "9:16"
+    burn_captions: bool = True
+    framing: FramingIn | None = None
     exports: list[ExportOut] = Field(default_factory=list)
 
     @classmethod
@@ -180,6 +187,8 @@ class ClipOut(BaseModel):
             user_trimmed=clip.user_trimmed,
             caption_style=edit.caption_style if edit else "bold_pop",
             ratio=edit.ratio if edit else "9:16",
+            burn_captions=edit.burn_captions if edit else True,
+            framing=FramingIn(**edit.framing) if edit and edit.framing else None,
             exports=[ExportOut.of(e) for e in (exports or [])],
         )
 
@@ -199,9 +208,15 @@ class CaptionPatchIn(BaseModel):
     ratio: Literal["9:16", "1:1", "16:9"] | None = None
 
 
+class EditPatchIn(CaptionPatchIn):
+    model_config = ConfigDict(extra="forbid")
+    burn_captions: bool = True
+    framing: FramingIn | None = None
+
+
 class ExportRequestIn(BaseModel):
-    ratio: Literal["9:16", "1:1", "16:9"] = "9:16"
-    style: str = "bold_pop"
+    ratio: Literal["9:16", "1:1", "16:9"] | None = None
+    style: str | None = None
     write_srt: bool = False
 
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 
 import {
@@ -7,6 +7,8 @@ import {
   formatDuration,
   type CaptionStyle,
   type Clip,
+  type ClipEditPatch,
+  type ClipFraming,
   type CropPath,
   type Job,
   type Word,
@@ -28,8 +30,15 @@ export function Review() {
   const [cropPath, setCropPath] = useState<CropPath | null>(null)
   const [wordsDirty, setWordsDirty] = useState(false)
   const [savingWords, setSavingWords] = useState(false)
+  const [savingSettings, setSavingSettings] = useState(false)
+  const [trimming, setTrimming] = useState(false)
+  const [dirtyBlockedMessage, setDirtyBlockedMessage] = useState<string | null>(null)
   const [exporting, setExporting] = useState<Set<string>>(new Set())
+  const [exportPending, setExportPending] = useState(false)
+  const exportLock = useRef(false)
   const [error, setError] = useState<Error | null>(null)
+  const selectedIdRef = useRef<string | null>(null)
+  selectedIdRef.current = selectedId
 
   useEffect(() => {
     if (!jobId) return
@@ -48,26 +57,88 @@ export function Review() {
     [clips, selectedId],
   )
 
+  const selectedClipId = selected?.id ?? null
+  const selectedRatio = selected?.ratio ?? null
+  const selectedFramingMode = selected?.framing?.mode ?? null
+  const selectedStartS = selected?.start_s ?? null
+  const selectedEndS = selected?.end_s ?? null
+
   useEffect(() => {
-    if (!selected) return
+    if (!selectedClipId) {
+      setWords([])
+      return
+    }
+    let cancelled = false
     setWordsDirty(false)
+    setDirtyBlockedMessage(null)
+    setWords([])
     api
-      .getClipWords(selected.id)
-      .then(setWords)
-      .catch(() => setWords([]))
+      .getClipWords(selectedClipId)
+      .then((nextWords) => {
+        if (!cancelled && selectedIdRef.current === selectedClipId) {
+          setWords(nextWords)
+        }
+      })
+      .catch(() => {
+        if (!cancelled && selectedIdRef.current === selectedClipId) {
+          setWords([])
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [selectedClipId])
+
+  useEffect(() => {
+    if (!selectedClipId) {
+      setCropPath(null)
+      return
+    }
+    let cancelled = false
+    setCropPath(null)
     // 404 is expected for audio-only sources and jobs that never reframed; the
     // player falls back to a centre crop, matching what the renderer does.
     api
-      .getCropPath(selected.id)
-      .then(setCropPath)
-      .catch(() => setCropPath(null))
-  }, [selected?.id])
+      .getCropPath(selectedClipId)
+      .then((nextCropPath) => {
+        if (!cancelled && selectedIdRef.current === selectedClipId) {
+          setCropPath(nextCropPath)
+        }
+      })
+      .catch(() => {
+        if (!cancelled && selectedIdRef.current === selectedClipId) {
+          setCropPath(null)
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [selectedClipId, selectedRatio, selectedFramingMode, selectedStartS, selectedEndS])
 
   const patchClip = useCallback((updated: Clip) => {
     setClips((current) => current.map((clip) => (clip.id === updated.id ? updated : clip)))
   }, [])
 
+  const editsPending = savingWords || savingSettings || trimming
+  const controlsLocked = editsPending || exportPending
+  const guardDirtyCaptions = (actionLabel: string): boolean => {
+    if (!wordsDirty) return false
+    setDirtyBlockedMessage(
+      `Save caption changes before ${actionLabel} so your edited words are not lost.`,
+    )
+    return true
+  }
+
+  const selectClip = (clipId: string) => {
+    if (clipId === selectedId) return
+    if (editsPending || exportLock.current) return
+    if (guardDirtyCaptions('switching clips')) return
+    setDirtyBlockedMessage(null)
+    setSelectedId(clipId)
+  }
+
   const setStatus = async (clip: Clip, status: Clip['status']) => {
+    if (editsPending || exportLock.current) return
     try {
       patchClip(await api.patchClip(clip.id, { status }))
     } catch (err) {
@@ -76,21 +147,36 @@ export function Review() {
   }
 
   const commitTrim = async (start: number, end: number) => {
-    if (!selected) return
+    if (!selected || editsPending || exportLock.current) return
+    if (guardDirtyCaptions('trimming the clip')) return
+    const clipId = selected.id
+    setTrimming(true)
+    setError(null)
     try {
-      patchClip(await api.patchClip(selected.id, { start_s: start, end_s: end }))
-      setWords(await api.getClipWords(selected.id))
+      patchClip(await api.patchClip(clipId, { start_s: start, end_s: end }))
+      const nextWords = await api.getClipWords(clipId)
+      if (selectedIdRef.current === clipId) {
+        setWords(nextWords)
+      }
     } catch (err) {
       setError(err as Error)
+    } finally {
+      setTrimming(false)
     }
   }
 
   const saveWords = async () => {
-    if (!selected) return
+    if (!selected || editsPending || exportLock.current) return
+    const clipId = selected.id
+    const wordsSnapshot = words
     setSavingWords(true)
+    setError(null)
     try {
-      patchClip(await api.patchCaptions(selected.id, { words }))
-      setWordsDirty(false)
+      patchClip(await api.patchEdit(clipId, { words: wordsSnapshot }))
+      if (selectedIdRef.current === clipId) {
+        setWordsDirty(false)
+        setDirtyBlockedMessage(null)
+      }
     } catch (err) {
       setError(err as Error)
     } finally {
@@ -98,46 +184,64 @@ export function Review() {
     }
   }
 
-  const setStyle = async (clip: Clip, styleKey: string) => {
-    try {
-      patchClip(await api.patchCaptions(clip.id, { caption_style: styleKey }))
-    } catch (err) {
-      setError(err as Error)
-    }
-  }
-
-  const setRatio = async (clip: Clip, ratio: string) => {
-    try {
-      patchClip(await api.patchCaptions(clip.id, { ratio }))
-    } catch (err) {
-      setError(err as Error)
-    }
-  }
-
-  const exportClip = async (clip: Clip) => {
-    setExporting((current) => new Set(current).add(clip.id))
+  const updateClipEdit = async (clip: Clip, patch: ClipEditPatch) => {
+    if (editsPending || exportLock.current) return
+    setSavingSettings(true)
     setError(null)
     try {
-      await api.exportClip(clip.id, clip.ratio, clip.caption_style)
-      patchClip(await api.getClip(clip.id))
+      patchClip(await api.patchEdit(clip.id, patch))
     } catch (err) {
       setError(err as Error)
     } finally {
-      setExporting((current) => {
-        const next = new Set(current)
-        next.delete(clip.id)
-        return next
-      })
+      setSavingSettings(false)
+    }
+  }
+
+  const setStyle = async (clip: Clip, styleKey: string) => {
+    await updateClipEdit(clip, { caption_style: styleKey })
+  }
+
+  const setRatio = async (clip: Clip, ratio: string) => {
+    await updateClipEdit(clip, { ratio })
+  }
+
+  const setBurnCaptions = async (clip: Clip, burnCaptions: boolean) => {
+    await updateClipEdit(clip, { burn_captions: burnCaptions })
+  }
+
+  const setFraming = async (clip: Clip, framing: ClipFraming) => {
+    await updateClipEdit(clip, { framing })
+  }
+
+  const exportClips = async (targets: Clip[]) => {
+    if (editsPending || exportLock.current) return
+    if (guardDirtyCaptions('exporting')) return
+    exportLock.current = true
+    setExportPending(true)
+    setError(null)
+    try {
+      for (const clip of targets) {
+        setExporting(new Set([clip.id]))
+        await api.exportClip(clip.id)
+        patchClip(await api.getClip(clip.id))
+      }
+    } catch (err) {
+      setError(err as Error)
+    } finally {
+      setExporting(new Set())
+      exportLock.current = false
+      setExportPending(false)
     }
   }
 
   const exportKept = async () => {
-    const targets = clips.filter((clip) => clip.status === 'kept')
-    for (const clip of targets) await exportClip(clip)
+    await exportClips(clips.filter((clip) => clip.status === 'kept'))
   }
 
   const keptCount = clips.filter((clip) => clip.status === 'kept').length
   const activeStyle = styles.find((style) => style.key === selected?.caption_style)
+  const burnCaptions = selected?.burn_captions ?? true
+  const framingMode = selected?.framing?.mode ?? 'auto'
 
   if (error && clips.length === 0) {
     return (
@@ -165,7 +269,11 @@ export function Review() {
           <span className="numeric text-xs text-ink-500">
             {clips.length} clips · {keptCount} kept
           </span>
-          <button onClick={exportKept} disabled={keptCount === 0} className="btn btn-primary">
+          <button
+            onClick={exportKept}
+            disabled={keptCount === 0 || controlsLocked || wordsDirty}
+            className="btn btn-primary"
+          >
             Export kept
           </button>
         </div>
@@ -175,6 +283,15 @@ export function Review() {
         <div className="mt-6 max-w-3xl">
           <ErrorNote error={error} onDismiss={() => setError(null)} />
         </div>
+      )}
+
+      {(dirtyBlockedMessage || wordsDirty) && (
+        <p
+          role="alert"
+          className="mt-4 max-w-3xl border-l-2 border-sodium-500 bg-ink-850/70 py-2 pl-3 pr-4 text-xs text-sodium-500"
+        >
+          {dirtyBlockedMessage || 'Save caption changes before trimming or exporting.'}
+        </p>
       )}
 
       {clips.length === 0 ? (
@@ -191,7 +308,8 @@ export function Review() {
                     clip={clip}
                     index={index}
                     selected={clip.id === selectedId}
-                    onSelect={() => setSelectedId(clip.id)}
+                    disabled={controlsLocked}
+                    onSelect={() => selectClip(clip.id)}
                     onKeep={() =>
                       setStatus(clip, clip.status === 'kept' ? 'candidate' : 'kept')
                     }
@@ -216,6 +334,7 @@ export function Review() {
                   style={activeStyle}
                   ratio={selected.ratio}
                   cropPath={cropPath}
+                  burnCaptions={burnCaptions}
                 />
                 <TrimBar
                   words={words}
@@ -224,6 +343,7 @@ export function Review() {
                   originalStart={selected.start_s}
                   originalEnd={selected.end_s}
                   onCommit={commitTrim}
+                  disabled={controlsLocked || wordsDirty}
                 />
               </>
             )}
@@ -248,20 +368,36 @@ export function Review() {
                 <CaptionEditor
                   words={words}
                   onChange={(next) => {
+                    if (controlsLocked || exportLock.current) return
                     setWords(next)
                     setWordsDirty(true)
                   }}
                   onSave={saveWords}
                   saving={savingWords}
+                  disabled={controlsLocked}
                   dirty={wordsDirty}
                 />
 
                 <div>
-                  <p className="eyebrow border-b border-ink-800 pb-2">Caption style</p>
+                  <div className="flex items-center justify-between border-b border-ink-800 pb-2">
+                    <p className="eyebrow">Caption style</p>
+                    <label className="flex cursor-pointer items-center gap-2 text-xs text-ink-200">
+                      <input
+                        type="checkbox"
+                        checked={burnCaptions}
+                        disabled={controlsLocked}
+                        onChange={(e) => setBurnCaptions(selected, e.target.checked)}
+                        className="accent-sodium-500"
+                      />
+                      <span>Subtitles</span>
+                    </label>
+                  </div>
                   <div className="mt-3 space-y-1">
                     {styles.map((style) => (
                       <button
                         key={style.key}
+                        type="button"
+                        disabled={controlsLocked}
                         onClick={() => setStyle(selected, style.key)}
                         className={[
                           'block w-full border-l-2 py-2 pl-3 text-left transition-colors duration-200',
@@ -285,6 +421,8 @@ export function Review() {
                     {RATIOS.map((ratio) => (
                       <button
                         key={ratio}
+                        type="button"
+                        disabled={controlsLocked}
                         onClick={() => setRatio(selected, ratio)}
                         className={[
                           'numeric btn',
@@ -297,10 +435,38 @@ export function Review() {
                   </div>
                 </div>
 
+                <div>
+                  <p className="eyebrow border-b border-ink-800 pb-2">Framing</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      disabled={controlsLocked}
+                      onClick={() => setFraming(selected, null)}
+                      className={[
+                        'btn',
+                        framingMode === 'auto' ? 'btn-primary' : 'btn-ghost',
+                      ].join(' ')}
+                    >
+                      Auto
+                    </button>
+                    <button
+                      type="button"
+                      disabled={controlsLocked}
+                      onClick={() => setFraming(selected, { mode: 'fit' })}
+                      className={[
+                        'btn',
+                        framingMode === 'fit' ? 'btn-primary' : 'btn-ghost',
+                      ].join(' ')}
+                    >
+                      Fit + blurred background
+                    </button>
+                  </div>
+                </div>
+
                 <div className="border-t border-ink-800 pt-6">
                   <button
-                    onClick={() => exportClip(selected)}
-                    disabled={exporting.has(selected.id)}
+                    onClick={() => exportClips([selected])}
+                    disabled={controlsLocked || wordsDirty}
                     className="btn btn-primary w-full"
                   >
                     {exporting.has(selected.id) ? 'Rendering…' : 'Export this clip'}
@@ -341,6 +507,7 @@ function ClipRow({
   clip,
   index,
   selected,
+  disabled,
   onSelect,
   onKeep,
   onDiscard,
@@ -348,6 +515,7 @@ function ClipRow({
   clip: Clip
   index: number
   selected: boolean
+  disabled?: boolean
   onSelect: () => void
   onKeep: () => void
   onDiscard: () => void
@@ -360,11 +528,12 @@ function ClipRow({
         clip.status === 'discarded' ? 'opacity-40' : '',
       ].join(' ')}
       style={{ animationDelay: `${Math.min(index, 10) * 35}ms` }}
-      onClick={onSelect}
+      onClick={() => !disabled && onSelect()}
       role="button"
-      tabIndex={0}
+      tabIndex={disabled ? -1 : 0}
+      aria-disabled={disabled || undefined}
       onKeyDown={(e) => {
-        if (e.key === 'Enter') onSelect()
+        if (!disabled && e.key === 'Enter') onSelect()
       }}
     >
       {/* The score is the thing you scan by, so it gets the display face. */}
@@ -397,6 +566,7 @@ function ClipRow({
             ].join(' ')}
           >
             <button
+              disabled={disabled}
               onClick={(e) => {
                 e.stopPropagation()
                 onKeep()
@@ -406,6 +576,7 @@ function ClipRow({
               {clip.status === 'kept' ? 'kept' : 'keep'}
             </button>
             <button
+              disabled={disabled}
               onClick={(e) => {
                 e.stopPropagation()
                 onDiscard()

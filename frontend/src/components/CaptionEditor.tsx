@@ -14,12 +14,14 @@ export function CaptionEditor({
   onChange,
   onSave,
   saving,
+  disabled,
   dirty,
 }: {
   words: Word[]
   onChange: (words: Word[]) => void
   onSave: () => void
   saving: boolean
+  disabled: boolean
   dirty: boolean
 }) {
   const [editing, setEditing] = useState<number | null>(null)
@@ -28,6 +30,7 @@ export function CaptionEditor({
   useEffect(() => setEditing(null), [words.length])
 
   const commit = (index: number) => {
+    if (disabled) return
     const text = draft.trim()
     if (text && text !== words[index].text) {
       const next = words.map((word, i) => (i === index ? { ...word, text } : word))
@@ -59,6 +62,7 @@ export function CaptionEditor({
             <input
               key={index}
               autoFocus
+              disabled={disabled}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onBlur={() => commit(index)}
@@ -81,6 +85,7 @@ export function CaptionEditor({
           ) : (
             <button
               key={index}
+              disabled={disabled}
               onClick={() => {
                 setDraft(word.text)
                 setEditing(index)
@@ -95,7 +100,7 @@ export function CaptionEditor({
       </div>
 
       <div className="mt-4 flex items-center gap-4">
-        <button onClick={onSave} disabled={!dirty || saving} className="btn btn-ghost">
+        <button onClick={onSave} disabled={!dirty || disabled} className="btn btn-ghost">
           {saving ? 'Saving…' : 'Save edits'}
         </button>
         <span className="text-xs text-ink-500">

@@ -12,7 +12,7 @@ import sqlite3
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any, Literal, TypedDict
 
 SourceType = Literal["youtube", "upload"]
 JobStatus = Literal["queued", "running", "failed", "done", "cancelled"]
@@ -166,12 +166,18 @@ class Clip:
         )
 
 
+class Framing(TypedDict):
+    mode: Literal["fit"]
+
+
 @dataclass
 class ClipEdit:
     clip_id: str
     edited_words: list[dict[str, Any]] | None = None
     caption_style: str = "bold_pop"
     ratio: str = "9:16"
+    burn_captions: bool = True
+    framing: Framing | None = None
     updated_at: str = field(default_factory=utcnow)
 
     @classmethod
@@ -179,7 +185,9 @@ class ClipEdit:
         raw = row["edited_words_json"]
         return cls(
             clip_id=row["clip_id"],
-            edited_words=json.loads(raw) if raw else None,
+            edited_words=json.loads(raw) if raw is not None else None,
+            burn_captions=bool(row["burn_captions"]),
+            framing=json.loads(row["framing_json"]) if row["framing_json"] else None,
             caption_style=row["caption_style"],
             ratio=row["ratio"],
             updated_at=row["updated_at"],

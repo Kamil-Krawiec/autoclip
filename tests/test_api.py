@@ -402,12 +402,13 @@ class TestClips:
         assert client.patch("/api/clips/nope", json={"title": "x"}).status_code == 404
         assert client.get("/api/clips/nope/crop-path").status_code == 404
 
-    def test_crop_path_is_404_before_reframe(self, client: TestClient, job_with_clips: Job) -> None:
-        # The review player treats this as "fall back to a centre crop", which
-        # is what the renderer does for these clips too.
+    def test_crop_path_is_effective_before_reframe(
+        self, client: TestClient, job_with_clips: Job
+    ) -> None:
+        # The API now supplies the same effective centre crop as export.
         clip_id = client.get(f"/api/jobs/{job_with_clips.id}/clips").json()[0]["id"]
 
-        assert client.get(f"/api/clips/{clip_id}/crop-path").status_code == 404
+        assert client.get(f"/api/clips/{clip_id}/crop-path").status_code == 200
 
     def test_crop_path_is_served_when_present(
         self, client: TestClient, job_with_clips: Job, autoclip_home
@@ -435,6 +436,104 @@ class TestClips:
         clip_id = client.get(f"/api/jobs/{job_with_clips.id}/clips").json()[0]["id"]
 
         assert client.get(f"/api/clips/{clip_id}/words").status_code == 404
+
+    def test_edit_legacy_merge_reset_and_empty_words(self, client, job_with_clips):
+        a, b, _ = client.get(f"/api/jobs/{job_with_clips.id}/clips").json()
+        url = f"/api/clips/{a['id']}"
+        response = client.patch(
+            url + "/edit", json={"burn_captions": False, "framing": {"mode": "fit"}, "ratio": "1:1"}
+        )
+        assert response.status_code == 200
+        response = client.patch(
+            url + "/captions", json={"words": [], "caption_style": "clean_lower"}
+        )
+        body = response.json()
+        assert body["burn_captions"] is False and body["framing"] == {"mode": "fit"}
+        assert body["ratio"] == "1:1" and body["caption_style"] == "clean_lower"
+        assert client.get(url + "/words").json() == []
+        assert client.get(f"/api/clips/{b['id']}").json()["burn_captions"] is True
+        for framing in (None, {"mode": "auto"}):
+            body = client.patch(url + "/edit", json={"framing": framing}).json()
+            assert body["framing"] is None and body["burn_captions"] is False
+
+    @pytest.mark.parametrize(
+        "patch",
+        [
+            {"burn_captions": None},
+            {"framing": {"mode": "manual"}},
+            {"framing": {"mode": "fit", "zoom": 2}},
+            {"unknown": True},
+        ],
+    )
+    def test_edit_rejects_invalid_fields(self, client, job_with_clips, patch):
+        clip = store.list_clips(job_with_clips.id)[0]
+        assert client.patch(f"/api/clips/{clip.id}/edit", json=patch).status_code == 422
+
+    def test_edited_words_respect_trim_and_preserve_corrections(self, client, job_with_clips):
+        clip = store.list_clips(job_with_clips.id)[0]
+        url = f"/api/clips/{clip.id}"
+        words = [
+            {"text": "Poprawione", "start": clip.start_s, "end": clip.start_s + 1, "speaker": None},
+            {
+                "text": "Dalej",
+                "start": clip.start_s + 20,
+                "end": clip.start_s + 21,
+                "speaker": None,
+            },
+        ]
+        assert client.patch(url + "/edit", json={"words": words}).status_code == 200
+        store.update_clip(clip.id, start_s=clip.start_s + 10)
+        assert [w["text"] for w in client.get(url + "/words").json()] == ["Dalej"]
+        store.update_clip(clip.id, start_s=clip.start_s)
+        assert client.get(url + "/words").json() == words
+
+    def test_export_uses_saved_state_and_unique_files(self, client, job_with_clips, monkeypatch):
+        from autoclip.pipeline import export
+
+        clip = store.list_clips(job_with_clips.id)[0]
+        url = f"/api/clips/{clip.id}"
+        assert (
+            client.patch(
+                url + "/edit",
+                json={
+                    "words": [],
+                    "caption_style": "clean_lower",
+                    "ratio": "1:1",
+                    "burn_captions": False,
+                    "framing": {"mode": "fit"},
+                },
+            ).status_code
+            == 200
+        )
+        requests = []
+
+        def render(request, *, work_dir, settings):
+            requests.append((request, work_dir))
+            request.destination.parent.mkdir(parents=True, exist_ok=True)
+            request.destination.write_bytes(b"rendered")
+
+        monkeypatch.setattr(export, "export_clip", render)
+        first = client.post(url + "/export", json={})
+        second = client.post(url + "/export", json={"ratio": "16:9", "style": "bold_pop"})
+        assert first.status_code == second.status_code == 201
+        a, b = requests[0][0], requests[1][0]
+        assert a.ratio == "1:1" and a.style.key == "clean_lower" and a.burn_captions is False
+        assert a.crop_path.segments[0].fit is True
+        assert a.crop_path.to_dict() == client.get(url + "/crop-path").json()
+        assert b.ratio == "16:9" and b.style.key == "bold_pop"
+        assert a.destination != b.destination and requests[0][1] != requests[1][1]
+        assert a.destination.read_bytes() == b"rendered"
+        assert client.get(url).json()["ratio"] == "1:1"
+
+        def failed_render(request, *, work_dir, settings):
+            request.destination.parent.mkdir(parents=True, exist_ok=True)
+            request.destination.write_bytes(b"partial")
+            raise export.ExportError("simulated failure")
+
+        monkeypatch.setattr(export, "export_clip", failed_render)
+        assert client.post(url + "/export", json={}).status_code == 500
+        assert len(store.list_exports(clip.id)) == 2
+        assert a.destination.read_bytes() == b"rendered"
 
 
 class TestProviderStatus:
