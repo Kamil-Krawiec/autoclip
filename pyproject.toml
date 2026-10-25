@@ -87,9 +87,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/artbyjazi/autoclip"
-Repository = "https://github.com/artbyjazi/autoclip"
-Issues = "https://github.com/artbyjazi/autoclip/issues"
+Homepage = "https://github.com/Kamil-Krawiec/autoclip"
+Repository = "https://github.com/Kamil-Krawiec/autoclip"
+Issues = "https://github.com/Kamil-Krawiec/autoclip/issues"
 
 [project.scripts]
 autoclip = "autoclip.cli:app"

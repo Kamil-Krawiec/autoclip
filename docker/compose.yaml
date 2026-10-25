@@ -11,7 +11,7 @@ services:
       # Bound to loopback: AutoClip has no authentication, so it must not be
       # reachable from the network by default. Change to "8000:8000" only on a
       # network you trust.
-      - '127.0.0.1:8000:8000'
+      - '127.0.0.1:9879:8000'
     volumes:
       - autoclip-data:/data
       # Drop source files here to ingest them without uploading through the UI.

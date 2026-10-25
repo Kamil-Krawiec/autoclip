@@ -40,6 +40,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ffmpeg \
       fonts-liberation \
       libgl1 \
+      libegl1 \
+      libgles2 \
       libglib2.0-0 \
       curl \
     && rm -rf /var/lib/apt/lists/*
@@ -50,7 +52,7 @@ COPY pyproject.toml README LICENSE ./
 COPY backend/ ./backend/
 COPY --from=frontend /backend/autoclip/static ./backend/autoclip/static
 
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir . "av<19"
 
 # Artifacts live on a volume so clips, transcripts, and settings survive a
 # container rebuild.

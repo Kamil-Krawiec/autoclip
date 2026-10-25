@@ -195,7 +195,7 @@ Each stage writes artifacts to `~/.autoclip/work/{job_id}/`, so a retry resumes 
 
 **Crop paths never interpolate across a cut.** Shots are detected first and framed independently. Panning through an edit is the most obvious sign of an auto-reframed video.
 
-[ARCHITECTURE.md](https://github.com/artbyjazi/autoclip/blob/main/docs/ARCHITECTURE.md) covers the rest, including why several odd-looking choices exist.
+[ARCHITECTURE.md](https://github.com/Kamil-Krawiec/autoclip/blob/main/docs/ARCHITECTURE.md) covers the rest, including why several odd-looking choices exist.
 
 ## What has and hasn't been verified
 
@@ -220,7 +220,7 @@ Deliberate, not oversights:
 
 ## Contributing
 
-Prompts and caption styles are the highest-leverage places to start, and neither needs deep knowledge of the codebase — `backend/autoclip/prompts/highlight_v1.txt` is plain text and affects output quality more than most code changes. See [CONTRIBUTING.md](https://github.com/artbyjazi/autoclip/blob/main/docs/CONTRIBUTING.md).
+Prompts and caption styles are the highest-leverage places to start, and neither needs deep knowledge of the codebase — `backend/autoclip/prompts/highlight_v1.txt` is plain text and affects output quality more than most code changes. See [CONTRIBUTING.md](https://github.com/Kamil-Krawiec/autoclip/blob/main/docs/CONTRIBUTING.md).
 
 ## Legal
 
