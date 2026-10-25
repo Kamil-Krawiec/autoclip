@@ -149,6 +149,13 @@ Everything the UI does is also on the CLI:
 
 ### Caption styles
 
+In **Review**, **Subtitles** turns burned captions on or off. **Framing → Fit +
+blurred background** keeps the whole source image visible inside the selected
+aspect ratio. **Auto** returns to automatic framing; after a manual trim it uses
+a centred crop. These choices are saved per clip and used by the export.
+Save transcript corrections before trimming, changing clips or exporting.
+Editing controls are locked while saves and exports are in progress.
+
 | style | look |
 |---|---|
 | `bold_pop` | chunky white, heavy outline, spoken word grows and turns yellow |

@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { formatTimecode, type CaptionStyle, type CropPath, type Word } from '../api'
+import {
+  formatTimecode,
+  type CaptionStyle,
+  type CropPath,
+  type CropSegment,
+  type Word,
+} from '../api'
 
 const VOLUME_KEY = 'autoclip.volume'
 
@@ -35,6 +41,7 @@ export function ClipPlayer({
   style,
   ratio,
   cropPath,
+  burnCaptions = true,
 }: {
   src: string
   startS: number
@@ -43,8 +50,10 @@ export function ClipPlayer({
   style: CaptionStyle | undefined
   ratio: string
   cropPath?: CropPath | null
+  burnCaptions?: boolean
 }) {
   const video = useRef<HTMLVideoElement>(null)
+  const bgVideo = useRef<HTMLVideoElement>(null)
   const [playing, setPlaying] = useState(false)
   const [time, setTime] = useState(startS)
   const [volume, setVolume] = useState(readStoredVolume)
@@ -78,16 +87,52 @@ export function ClipPlayer({
     window.localStorage.setItem(VOLUME_KEY, String(volume))
   }, [volume, muted])
 
+  const syncBackground = useCallback((forceTime = false) => {
+    const fg = video.current
+    const bg = bgVideo.current
+    if (!fg || !bg) return
+    bg.muted = true
+    bg.volume = 0
+    if (bg.playbackRate !== fg.playbackRate) {
+      bg.playbackRate = fg.playbackRate
+    }
+    if (forceTime || Math.abs(bg.currentTime - fg.currentTime) > 0.08) {
+      try {
+        bg.currentTime = fg.currentTime
+      } catch {
+        /* Ignore seek errors before metadata is ready. */
+      }
+    }
+    if (fg.paused) {
+      if (!bg.paused) bg.pause()
+    } else if (bg.paused) {
+      void bg.play().catch(() => {})
+    }
+  }, [])
+
   // Re-seek whenever the clip or its trim changes, so the preview always starts
   // where the export will.
   useEffect(() => {
     const element = video.current
     if (!element) return
     element.currentTime = startS
+    if (bgVideo.current) {
+      bgVideo.current.pause()
+      bgVideo.current.currentTime = startS
+    }
     setTime(startS)
     setPlaying(false)
     element.pause()
   }, [src, startS])
+
+  useEffect(() => {
+    const fg = video.current
+    const bg = bgVideo.current
+    return () => {
+      fg?.pause()
+      bg?.pause()
+    }
+  }, [])
 
   const onTimeUpdate = useCallback(() => {
     const element = video.current
@@ -95,12 +140,17 @@ export function ClipPlayer({
     if (element.currentTime >= endS) {
       element.pause()
       element.currentTime = startS
+      if (bgVideo.current) {
+        bgVideo.current.pause()
+        bgVideo.current.currentTime = startS
+      }
       setPlaying(false)
       setTime(startS)
       return
     }
     setTime(element.currentTime)
-  }, [endS, startS])
+    syncBackground(false)
+  }, [endS, startS, syncBackground])
 
   const toggle = () => {
     const element = video.current
@@ -108,11 +158,19 @@ export function ClipPlayer({
     if (element.paused) {
       if (element.currentTime < startS || element.currentTime >= endS) {
         element.currentTime = startS
+        if (bgVideo.current) {
+          bgVideo.current.currentTime = startS
+        }
       }
       void element.play()
+      if (bgVideo.current) {
+        syncBackground(true)
+        void bgVideo.current.play().catch(() => {})
+      }
       setPlaying(true)
     } else {
       element.pause()
+      bgVideo.current?.pause()
       setPlaying(false)
     }
   }
@@ -120,7 +178,18 @@ export function ClipPlayer({
   const elapsed = Math.max(0, time - startS)
   const duration = Math.max(0.01, endS - startS)
 
-  const cropStyle = cropWindowStyle(cropPath, elapsed)
+  const activeSegment = activeCropSegment(cropPath, elapsed)
+  const isFit = Boolean(activeSegment?.fit)
+  const cropStyle = isFit ? null : cropWindowStyle(cropPath, activeSegment, elapsed)
+
+  useEffect(() => {
+    if (!isFit) {
+      bgVideo.current?.pause()
+      return
+    }
+    syncBackground(true)
+  }, [isFit, src, syncBackground])
+
   const [aspectW, aspectH] = ASPECTS[ratio] ?? ASPECTS['9:16']
   // Height alone can't bound the box: with width:100% and an aspect-ratio, a
   // max-height clamp shortens the element without narrowing it, so the rendered
@@ -144,21 +213,53 @@ export function ClipPlayer({
           }
         }}
       >
+        {isFit && (
+          <video
+            ref={bgVideo}
+            src={src}
+            muted
+            playsInline
+            preload="auto"
+            tabIndex={-1}
+            aria-hidden="true"
+            onLoadedMetadata={() => syncBackground(true)}
+            className="pointer-events-none absolute inset-0 size-full scale-110 object-cover blur-xl brightness-75"
+          />
+        )}
+
         <video
           ref={video}
           src={src}
-          className={cropStyle ? 'absolute max-w-none' : 'size-full object-cover'}
+          className={
+            isFit
+              ? 'relative z-10 size-full object-contain'
+              : cropStyle
+                ? 'absolute max-w-none'
+                : 'size-full object-cover'
+          }
           style={cropStyle ?? undefined}
           onTimeUpdate={onTimeUpdate}
+          onPlay={() => {
+            setPlaying(true)
+            syncBackground(true)
+          }}
+          onPause={() => {
+            setPlaying(false)
+            bgVideo.current?.pause()
+          }}
+          onSeeked={() => syncBackground(true)}
+          onRateChange={() => syncBackground(false)}
           preload="auto"
           playsInline
           controls={nativeControls}
         />
 
-        <CaptionOverlay words={words} time={time} style={style} />
+        {burnCaptions && (
+          <CaptionOverlay words={words} time={time} style={style} />
+        )}
 
         {!playing && (
-          <div className="pointer-events-none absolute inset-0 grid place-items-center">
+          <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center">
             <span className="grid size-16 place-items-center rounded-full bg-ink-900/70 pl-1 text-2xl text-ink-100 backdrop-blur-[2px]">
               ▶
             </span>
@@ -307,6 +408,17 @@ async function measureOutputLevel(element: HTMLVideoElement): Promise<AudioCheck
   }
 }
 
+function activeCropSegment(
+  cropPath: CropPath | null | undefined,
+  elapsed: number,
+): CropSegment | null {
+  if (!cropPath || cropPath.segments.length === 0) return null
+  return (
+    cropPath.segments.find((s) => elapsed >= s.start_s && elapsed < s.end_s) ??
+    cropPath.segments[cropPath.segments.length - 1]
+  )
+}
+
 /**
  * Position the source video so the preview box shows the crop the renderer will.
  *
@@ -317,13 +429,10 @@ async function measureOutputLevel(element: HTMLVideoElement): Promise<AudioCheck
  */
 function cropWindowStyle(
   cropPath: CropPath | null | undefined,
+  segment: CropSegment | null,
   elapsed: number,
 ): React.CSSProperties | null {
-  if (!cropPath || cropPath.segments.length === 0) return null
-
-  const segment =
-    cropPath.segments.find((s) => elapsed >= s.start_s && elapsed < s.end_s) ??
-    cropPath.segments[cropPath.segments.length - 1]
+  if (!cropPath || !segment) return null
 
   // A fitted segment shows the whole frame over a blur rather than cropping.
   // Letting it fall through to object-contain is closer than any crop would be.
@@ -469,7 +578,7 @@ function CaptionOverlay({
 
   return (
     <div
-      className="pointer-events-none absolute inset-x-0 flex justify-center px-[6%]"
+      className="pointer-events-none absolute inset-x-0 z-20 flex justify-center px-[6%]"
       style={{ bottom: `${marginRatio * 100}%` }}
     >
       <p

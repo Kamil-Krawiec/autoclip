@@ -16,6 +16,7 @@ export function TrimBar({
   originalStart,
   originalEnd,
   onCommit,
+  disabled,
 }: {
   words: Word[]
   startS: number
@@ -23,12 +24,16 @@ export function TrimBar({
   originalStart: number
   originalEnd: number
   onCommit: (start: number, end: number) => void
+  disabled: boolean
 }) {
   const track = useRef<HTMLDivElement>(null)
   const [dragging, setDragging] = useState<'start' | 'end' | null>(null)
   const [local, setLocal] = useState<{ start: number; end: number }>({ start: startS, end: endS })
 
-  useEffect(() => setLocal({ start: startS, end: endS }), [startS, endS])
+  useEffect(() => {
+    setLocal({ start: startS, end: endS })
+    if (disabled) setDragging(null)
+  }, [disabled, startS, endS])
 
   // Padding either side so a trim can be widened as well as tightened.
   const windowStart = originalStart - 5
@@ -54,7 +59,7 @@ export function TrimBar({
   )
 
   useEffect(() => {
-    if (!dragging) return
+    if (!dragging || disabled) return
 
     const move = (event: PointerEvent) => {
       const rect = track.current?.getBoundingClientRect()
@@ -91,7 +96,7 @@ export function TrimBar({
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', release)
     }
-  }, [dragging, snap, onCommit, startS, endS])
+  }, [dragging, disabled, snap, onCommit, startS, endS])
 
   const left = toFraction(local.start)
   const right = toFraction(local.end)
@@ -125,8 +130,18 @@ export function TrimBar({
           style={{ left: `${left * 100}%`, right: `${(1 - right) * 100}%` }}
         />
 
-        <Handle position={left} edge="start" onGrab={() => setDragging('start')} />
-        <Handle position={right} edge="end" onGrab={() => setDragging('end')} />
+        <Handle
+          position={left}
+          edge="start"
+          disabled={disabled}
+          onGrab={() => !disabled && setDragging('start')}
+        />
+        <Handle
+          position={right}
+          edge="end"
+          disabled={disabled}
+          onGrab={() => !disabled && setDragging('end')}
+        />
       </div>
     </div>
   )
@@ -136,13 +151,16 @@ function Handle({
   position,
   edge,
   onGrab,
+  disabled,
 }: {
   position: number
   edge: 'start' | 'end'
   onGrab: () => void
+  disabled: boolean
 }) {
   return (
     <button
+      disabled={disabled}
       onPointerDown={(e) => {
         e.preventDefault()
         onGrab()

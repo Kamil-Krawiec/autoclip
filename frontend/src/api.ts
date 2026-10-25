@@ -50,6 +50,12 @@ export interface ExportRecord {
 
 export type ClipStatus = 'candidate' | 'kept' | 'discarded' | 'exported'
 
+export interface Framing {
+  mode: 'fit'
+}
+
+export type ClipFraming = Framing | null
+
 export interface Clip {
   id: string
   job_id: string
@@ -67,7 +73,17 @@ export interface Clip {
   user_trimmed: boolean
   caption_style: string
   ratio: string
+  burn_captions?: boolean
+  framing?: ClipFraming
   exports: ExportRecord[]
+}
+
+export interface ClipEditPatch {
+  words?: Word[]
+  caption_style?: string
+  ratio?: string
+  burn_captions?: boolean
+  framing?: ClipFraming
 }
 
 export interface Word {
@@ -273,11 +289,27 @@ export const api = {
       body: JSON.stringify(patch),
     }),
 
-  exportClip: (clipId: string, ratio: string, style: string, writeSrt = false) =>
-    request<ExportRecord>(`/api/clips/${clipId}/export`, {
-      method: 'POST',
-      body: JSON.stringify({ ratio, style, write_srt: writeSrt }),
+  patchEdit: (clipId: string, patch: ClipEditPatch) =>
+    request<Clip>(`/api/clips/${clipId}/edit`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
     }),
+
+  exportClip: (
+    clipId: string,
+    ratio?: string,
+    style?: string,
+    writeSrt?: boolean,
+  ) => {
+    const body: { ratio?: string; style?: string; write_srt?: boolean } = {}
+    if (ratio !== undefined) body.ratio = ratio
+    if (style !== undefined) body.style = style
+    if (writeSrt !== undefined) body.write_srt = writeSrt
+    return request<ExportRecord>(`/api/clips/${clipId}/export`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    })
+  },
 
   captionStyles: () => request<CaptionStyle[]>('/api/caption-styles'),
   providerStatus: () => request<ProviderStatus[]>('/api/providers/status'),
