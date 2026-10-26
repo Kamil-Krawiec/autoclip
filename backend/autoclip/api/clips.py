@@ -171,8 +171,14 @@ async def _save_edit(clip, payload: CaptionPatchIn) -> ClipOut:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     changes = payload.model_dump(exclude_unset=True)
+    if "caption_overrides" in changes and changes["caption_overrides"] is not None:
+        raw_overrides = changes["caption_overrides"]
+        normalized = {key: value for key, value in raw_overrides.items() if value is not None}
+        changes["caption_overrides"] = normalized
     changes = {
-        key: value for key, value in changes.items() if value is not None or key == "framing"
+        key: value
+        for key, value in changes.items()
+        if value is not None or key in {"framing", "caption_overrides"}
     }
     if "words" in changes:
         changes["edited_words"] = changes.pop("words")
@@ -197,8 +203,9 @@ async def export_clip(clip_id: str, payload: ExportRequestIn) -> ExportOut:
     edit = await asyncio.to_thread(store.get_clip_edit, clip_id) or ClipEdit(clip_id=clip_id)
     ratio = payload.ratio or edit.ratio
     try:
-        style = captions_module.get_style(
-            payload.style if payload.style is not None else edit.caption_style
+        style = captions_module.resolve_style(
+            payload.style if payload.style is not None else edit.caption_style,
+            edit.caption_overrides,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -320,6 +327,8 @@ async def caption_styles() -> list[CaptionStyleOut]:
                 "boxed": style.boxed,
                 "animation": style.animation,
                 "maxWords": style.max_words,
+                "positionX": 0.5,
+                "positionY": 1 - style.margin_v_ratio,
             },
         )
         for style in captions_module.PRESETS.values()

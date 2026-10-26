@@ -191,6 +191,7 @@ class ClipOut(BaseModel):
     ratio: str = "9:16"
     burn_captions: bool = True
     framing: FramingIn | None = None
+    caption_overrides: dict[str, float] | None = None
     exports: list[ExportOut] = Field(default_factory=list)
 
     @classmethod
@@ -220,6 +221,7 @@ class ClipOut(BaseModel):
             ratio=edit.ratio if edit else "9:16",
             burn_captions=edit.burn_captions if edit else True,
             framing=edit.framing if edit else None,
+            caption_overrides=edit.caption_overrides if edit else None,
             exports=[ExportOut.of(e) for e in (exports or [])],
         )
 
@@ -239,10 +241,24 @@ class CaptionPatchIn(BaseModel):
     ratio: Literal["9:16", "1:1", "16:9"] | None = None
 
 
+class CaptionOverridesIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    size_ratio: float | None = Field(
+        default=None, ge=0.02, le=0.10, strict=True, allow_inf_nan=False
+    )
+    position_x: float | None = Field(
+        default=None, ge=0.10, le=0.90, strict=True, allow_inf_nan=False
+    )
+    position_y: float | None = Field(
+        default=None, ge=0.10, le=0.95, strict=True, allow_inf_nan=False
+    )
+
+
 class EditPatchIn(CaptionPatchIn):
     model_config = ConfigDict(extra="forbid")
     burn_captions: bool = True
     framing: FramingIn | None = None
+    caption_overrides: CaptionOverridesIn | None = None
 
 
 class ExportRequestIn(BaseModel):

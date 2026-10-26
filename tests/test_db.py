@@ -295,8 +295,8 @@ def test_v1_edit_migration_preserves_data_and_reopens(tmp_path):
     conn.execute("INSERT INTO clip_edits VALUES ('c','[]','clean_lower','1:1','now')")
     conn.execute("INSERT INTO exports(id,clip_id,path,created_at) VALUES ('e','c','old.mp4','now')")
     conn.commit()
-    assert migrate(conn) == 3
-    assert migrate(conn) == 3
+    assert migrate(conn) == db.SCHEMA_VERSION
+    assert migrate(conn) == db.SCHEMA_VERSION
     conn.close()
     conn = db.connect(target)
     try:
@@ -304,6 +304,7 @@ def test_v1_edit_migration_preserves_data_and_reopens(tmp_path):
         assert edit.edited_words == []
         assert edit.caption_style == "clean_lower" and edit.ratio == "1:1"
         assert edit.burn_captions is True and edit.framing is None
+        assert edit.caption_overrides is None
         assert conn.execute("SELECT path FROM exports").fetchone()[0] == "old.mp4"
         source = conn.execute("SELECT path, library_path FROM sources").fetchone()
         assert tuple(source) == ("old.mp4", None)
@@ -322,3 +323,56 @@ def test_manual_edit_survives_database_reopen(initialised_db):
     assert db.init() == initialised_db
     loaded = store.get_clip_edit(clip.id)
     assert loaded.framing == framing and loaded.burn_captions is False
+
+
+def test_v3_caption_layout_migration_preserves_existing_records(tmp_path):
+    from autoclip.db.schema import _migration_v1, _migration_v2, _migration_v3, migrate
+
+    target = tmp_path / "v3.db"
+    conn = db.connect(target)
+    _migration_v1(conn)
+    _migration_v2(conn)
+    _migration_v3(conn)
+    conn.execute("PRAGMA user_version = 3")
+    conn.execute(
+        "INSERT INTO sources(id,type,path,created_at,library_path) "
+        "VALUES ('s','upload','old.mp4','now','folder/old.mp4')"
+    )
+    conn.execute(
+        "INSERT INTO jobs(id,source_id,status,created_at,updated_at) "
+        "VALUES ('j','s','done','now','now')"
+    )
+    conn.execute("INSERT INTO clips(id,job_id,start_s,end_s,created_at) VALUES ('c','j',0,5,'now')")
+    framing = '{"mode":"manual","center_x":0.2,"center_y":0.8,"zoom":2}'
+    words = '[{"text":"Polski","start":0,"end":1}]'
+    conn.execute(
+        "INSERT INTO clip_edits(clip_id,edited_words_json,caption_style,ratio,burn_captions,"
+        "framing_json,updated_at) VALUES ('c',?,'clean_lower','1:1',0,?,'now')",
+        (words, framing),
+    )
+    conn.execute(
+        "INSERT INTO exports(id,clip_id,path,ratio,style,size_bytes,created_at) "
+        "VALUES ('e','c','old.mp4','1:1','clean_lower',123,'now')"
+    )
+    conn.commit()
+    assert migrate(conn) == db.SCHEMA_VERSION
+    conn.close()
+
+    conn = db.connect(target)
+    try:
+        edit = ClipEdit.from_row(conn.execute("SELECT * FROM clip_edits").fetchone())
+        assert edit.edited_words == [{"text": "Polski", "start": 0, "end": 1}]
+        assert edit.caption_style == "clean_lower" and edit.ratio == "1:1"
+        assert edit.burn_captions is False and edit.framing == {
+            "mode": "manual",
+            "center_x": 0.2,
+            "center_y": 0.8,
+            "zoom": 2,
+        }
+        assert edit.caption_overrides is None
+        assert tuple(
+            conn.execute("SELECT path, ratio, style, size_bytes FROM exports").fetchone()
+        ) == ("old.mp4", "1:1", "clean_lower", 123)
+        assert conn.execute("SELECT library_path FROM sources").fetchone()[0] == "folder/old.mp4"
+    finally:
+        conn.close()
