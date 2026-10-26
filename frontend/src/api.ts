@@ -12,6 +12,7 @@ export interface Source {
   url: string | null
   filename: string | null
   channel: string | null
+  library_path?: string | null
   duration_s: number
   width: number | null
   height: number | null
@@ -19,6 +20,20 @@ export interface Source {
   has_audio: boolean
   has_video: boolean
   created_at: string
+}
+
+export interface LibraryEntry {
+  path: string
+  name: string
+  is_dir: boolean
+  size_bytes: number | null
+}
+
+export interface LibraryListing {
+  available: boolean
+  directory: string
+  entries: LibraryEntry[]
+  truncated: boolean
 }
 
 export type JobStatus = 'queued' | 'running' | 'failed' | 'done' | 'cancelled'
@@ -270,6 +285,17 @@ export const api = {
   fetchModels: () => request<void>('/api/system/models', { method: 'POST' }),
 
   listSources: () => request<Source[]>('/api/sources'),
+
+  listLibrary: (directory = '') => {
+    const query = directory ? `?directory=${encodeURIComponent(directory)}` : ''
+    return request<LibraryListing>(`/api/library${query}`)
+  },
+
+  importLibrary: (path: string) =>
+    request<Source>('/api/library/import', {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    }),
 
   ingestYouTube: (url: string, cookiesFromBrowser?: string) =>
     request<Source>('/api/sources/youtube', {

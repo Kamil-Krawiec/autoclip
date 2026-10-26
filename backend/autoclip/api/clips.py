@@ -10,6 +10,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
+from .. import library as media_library
 from .. import paths
 from ..config import load as load_settings
 from ..db import store
@@ -223,8 +224,12 @@ async def export_clip(clip_id: str, payload: ExportRequestIn) -> ExportOut:
         / export_module.output_filename(clip.title or f"clip-{clip.rank}", ratio)
     )
 
+    try:
+        source_path = await asyncio.to_thread(media_library.media_path, source)
+    except media_library.LibraryError as exc:
+        raise HTTPException(status_code=410, detail="Source media is unavailable.") from exc
     request = export_module.ExportRequest(
-        source=Path(source.path),
+        source=source_path,
         destination=destination,
         start_s=clip.start_s,
         end_s=clip.end_s,
@@ -284,10 +289,15 @@ async def job_media(job_id: str) -> FileResponse:
         raise HTTPException(status_code=404, detail="Job not found.")
 
     source = await asyncio.to_thread(store.get_source, job.source_id)
-    if source is None or not Path(source.path).exists():
+    if source is None:
         raise HTTPException(status_code=404, detail="Source media not found.")
-
-    return FileResponse(Path(source.path))
+    try:
+        source_path = await asyncio.to_thread(media_library.media_path, source)
+    except media_library.LibraryError as exc:
+        raise HTTPException(status_code=410, detail="Source media is unavailable.") from exc
+    if source.library_path is None and not source_path.exists():
+        raise HTTPException(status_code=404, detail="Source media not found.")
+    return FileResponse(source_path)
 
 
 @router.get("/caption-styles", response_model=list[CaptionStyleOut])

@@ -295,8 +295,8 @@ def test_v1_edit_migration_preserves_data_and_reopens(tmp_path):
     conn.execute("INSERT INTO clip_edits VALUES ('c','[]','clean_lower','1:1','now')")
     conn.execute("INSERT INTO exports(id,clip_id,path,created_at) VALUES ('e','c','old.mp4','now')")
     conn.commit()
-    assert migrate(conn) == 2
-    assert migrate(conn) == 2
+    assert migrate(conn) == 3
+    assert migrate(conn) == 3
     conn.close()
     conn = db.connect(target)
     try:
@@ -305,6 +305,8 @@ def test_v1_edit_migration_preserves_data_and_reopens(tmp_path):
         assert edit.caption_style == "clean_lower" and edit.ratio == "1:1"
         assert edit.burn_captions is True and edit.framing is None
         assert conn.execute("SELECT path FROM exports").fetchone()[0] == "old.mp4"
+        source = conn.execute("SELECT path, library_path FROM sources").fetchone()
+        assert tuple(source) == ("old.mp4", None)
     finally:
         conn.close()
 

@@ -8,6 +8,7 @@ import logging
 from fastapi import APIRouter, HTTPException, Request
 from sse_starlette.sse import EventSourceResponse
 
+from .. import library as media_library
 from ..config import load as load_settings
 from ..db import store
 from ..db.models import Job, new_id
@@ -51,6 +52,10 @@ async def create_job(payload: JobCreateIn) -> JobOut:
     source = await asyncio.to_thread(store.get_source, payload.source_id)
     if source is None:
         raise HTTPException(status_code=404, detail="Source not found.")
+    try:
+        await asyncio.to_thread(media_library.media_path, source)
+    except media_library.LibraryError as exc:
+        raise HTTPException(status_code=410, detail="Source media is unavailable.") from exc
 
     settings = _apply_overrides(load_settings(), payload.settings)
     if settings.clips.min_duration_s >= settings.clips.max_duration_s:
