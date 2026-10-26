@@ -147,6 +147,15 @@ Everything the UI does is also on the CLI:
 | `autoclip config show` | print settings |
 | `autoclip update-ytdlp` | update yt-dlp after a YouTube change |
 
+### Upload and reuse
+
+File uploads show transferred bytes and progress, then **Validating media** while
+the server checks the file. **Cancel** stops a transfer; retrying sends the file
+again. Once validation starts, the server can finish saving the source even if
+you leave the page. Transfers are limited to 8 GiB including multipart
+overhead. Choose **Existing source → Process again** to skip uploading a saved
+file, or **Open clips** to continue editing a completed analysis.
+
 ### Caption styles
 
 In **Review**, **Subtitles** turns burned captions on or off. **Framing → Fit +
