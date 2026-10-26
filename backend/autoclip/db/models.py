@@ -197,6 +197,7 @@ class ClipEdit:
     ratio: str = "9:16"
     burn_captions: bool = True
     framing: Framing | None = None
+    caption_overrides: dict[str, float] | None = None
     updated_at: str = field(default_factory=utcnow)
 
     @classmethod
@@ -207,6 +208,9 @@ class ClipEdit:
             edited_words=json.loads(raw) if raw is not None else None,
             burn_captions=bool(row["burn_captions"]),
             framing=json.loads(row["framing_json"]) if row["framing_json"] else None,
+            caption_overrides=(
+                json.loads(row["caption_overrides_json"]) if row["caption_overrides_json"] else None
+            ),
             caption_style=row["caption_style"],
             ratio=row["ratio"],
             updated_at=row["updated_at"],

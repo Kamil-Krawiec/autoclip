@@ -171,6 +171,13 @@ a centred crop. These choices are saved per clip and used by the export.
 Save transcript corrections before trimming, changing clips or exporting.
 Editing controls are locked while saves and exports are in progress.
 
+**Caption layout** adjusts size and horizontal/vertical position for each clip.
+Choose **Apply caption layout** to save and update the preview, **Discard caption
+layout** to restore saved values, or **Reset caption layout** to use the preset.
+Size is a percentage of video height; position uses the caption block's bottom
+centre. Apply or discard pending layout changes before switching clips or
+exporting. The browser preview is approximate; MP4 uses the saved ASS layout.
+
 Choose **Manual** to move the crop over the full source image and zoom from
 1× to 4×. Dragging saves once on release; keyboard sliders use **Apply framing**.
 The draft rectangle is approximate until applied; the main player shows the

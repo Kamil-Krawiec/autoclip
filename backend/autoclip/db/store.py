@@ -331,14 +331,15 @@ def upsert_clip_edit(edit: ClipEdit) -> ClipEdit:
         conn.execute(
             """
             INSERT INTO clip_edits (clip_id, edited_words_json, caption_style, ratio,
-                                    burn_captions, framing_json, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                                    burn_captions, framing_json, caption_overrides_json, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(clip_id) DO UPDATE SET
                 edited_words_json = excluded.edited_words_json,
                 caption_style = excluded.caption_style,
                 ratio = excluded.ratio,
                 burn_captions = excluded.burn_captions,
                 framing_json = excluded.framing_json,
+                caption_overrides_json = excluded.caption_overrides_json,
                 updated_at = excluded.updated_at
             """,
             (
@@ -348,6 +349,7 @@ def upsert_clip_edit(edit: ClipEdit) -> ClipEdit:
                 edit.ratio,
                 edit.burn_captions,
                 json.dumps(edit.framing) if edit.framing is not None else None,
+                json.dumps(edit.caption_overrides) if edit.caption_overrides else None,
                 utcnow(),
             ),
         )
@@ -363,11 +365,13 @@ def patch_clip_edit(clip_id: str, changes: dict[str, Any]) -> ClipEdit:
         "burn_captions": "burn_captions",
         "framing": "framing_json",
     }
+    overrides = changes.get("caption_overrides", UNSET)
     values = {
         columns[key]: (
             json.dumps(value) if key in {"edited_words", "framing"} and value is not None else value
         )
         for key, value in changes.items()
+        if key != "caption_overrides"
     }
     values["updated_at"] = utcnow()
     with connection() as conn:
@@ -376,6 +380,8 @@ def patch_clip_edit(clip_id: str, changes: dict[str, Any]) -> ClipEdit:
             "ON CONFLICT(clip_id) DO NOTHING",
             (clip_id, values["updated_at"]),
         )
+        if not isinstance(overrides, _Unset):
+            values["caption_overrides_json"] = json.dumps(overrides) if overrides else None
         assignments = ", ".join(f"{name} = ?" for name in values)
         conn.execute(
             f"UPDATE clip_edits SET {assignments} WHERE clip_id = ?", (*values.values(), clip_id)

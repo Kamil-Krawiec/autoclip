@@ -13,7 +13,7 @@ it's why event counts look high relative to word counts.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import pysubs2
@@ -84,6 +84,8 @@ class CaptionStyle:
     all_caps: bool = True
     #: Distance from the bottom of the frame, as a fraction of height.
     margin_v_ratio: float = 0.24
+    position_x: float | None = None
+    position_y: float | None = None
     max_words: int = DEFAULT_MAX_WORDS
     #: "none" | "scale" | "karaoke"
     animation: str = "scale"
@@ -174,6 +176,11 @@ def get_style(key: str) -> CaptionStyle:
     if style is None:
         raise ValueError(f"Unknown caption style {key!r}. Available: {', '.join(PRESETS)}")
     return style
+
+
+def resolve_style(key: str, overrides: dict[str, float] | None = None) -> CaptionStyle:
+    """Return a per-render style copy with saved caption layout overrides."""
+    return replace(get_style(key), **(overrides or {}))
 
 
 # --------------------------------------------------------------------------
@@ -275,6 +282,13 @@ def build_ass(
             subs.events.extend(_per_word_events(group, style, time_offset_s))
         else:
             subs.events.append(_static_event(group, style, time_offset_s))
+
+    if style.position_x is not None or style.position_y is not None:
+        x = style.position_x if style.position_x is not None else 0.5
+        y = style.position_y if style.position_y is not None else 1 - style.margin_v_ratio
+        position = f"{{\\an2\\pos({round(width * x)},{round(height * y)})}}"
+        for event in subs.events:
+            event.text = position + event.text.replace("{\\r}", "{\\r" + position[1:])
 
     return subs
 

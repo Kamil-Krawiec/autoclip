@@ -5,6 +5,7 @@ import {
   api,
   formatBytes,
   formatDuration,
+  type CaptionOverrides,
   type CaptionStyle,
   type Clip,
   type ClipEditPatch,
@@ -15,6 +16,7 @@ import {
   type Word,
 } from '../api'
 import { CaptionEditor } from '../components/CaptionEditor'
+import { CaptionLayoutEditor } from '../components/CaptionLayoutEditor'
 import { ClipPlayer } from '../components/ClipPlayer'
 import { ErrorNote } from '../components/ErrorNote'
 import { FramingEditor } from '../components/FramingEditor'
@@ -32,6 +34,7 @@ export function Review() {
   const [cropPath, setCropPath] = useState<CropPath | null>(null)
   const [wordsDirty, setWordsDirty] = useState(false)
   const [framingDirty, setFramingDirty] = useState(false)
+  const [captionLayoutDirty, setCaptionLayoutDirty] = useState(false)
   const [savingWords, setSavingWords] = useState(false)
   const [savingSettings, setSavingSettings] = useState(false)
   const [trimming, setTrimming] = useState(false)
@@ -80,6 +83,7 @@ export function Review() {
     let cancelled = false
     setWordsDirty(false)
     setFramingDirty(false)
+    setCaptionLayoutDirty(false)
     setDirtyBlockedMessage(null)
     setWords([])
     api
@@ -145,10 +149,21 @@ export function Review() {
       setDirtyBlockedMessage(`Apply or discard framing changes before ${actionLabel}.`)
       return true
     }
+    if (captionLayoutDirty) {
+      setDirtyBlockedMessage(
+        `Apply or discard caption layout changes before ${actionLabel}.`,
+      )
+      return true
+    }
     if (!wordsDirty) return false
     setDirtyBlockedMessage(
       `Save caption changes before ${actionLabel} so your edited words are not lost.`,
     )
+    return true
+  }
+  const guardCaptionLayoutDraft = (actionLabel: string): boolean => {
+    if (!captionLayoutDirty) return false
+    setDirtyBlockedMessage(`Apply or discard caption layout changes before ${actionLabel}.`)
     return true
   }
 
@@ -223,6 +238,7 @@ export function Review() {
   }
 
   const setStyle = async (clip: Clip, styleKey: string) => {
+    if (guardCaptionLayoutDraft('changing caption style')) return
     await updateClipEdit(clip, { caption_style: styleKey })
   }
 
@@ -232,12 +248,20 @@ export function Review() {
   }
 
   const setBurnCaptions = async (clip: Clip, burnCaptions: boolean) => {
+    if (guardCaptionLayoutDraft('toggling subtitles')) return
     await updateClipEdit(clip, { burn_captions: burnCaptions })
   }
 
   const setFraming = async (clip: Clip, framing: ClipFraming): Promise<boolean> => {
     if (guardDirtyCaptions('changing framing mode')) return false
     return updateClipEdit(clip, { framing })
+  }
+
+  const setCaptionOverrides = async (
+    clip: Clip,
+    captionOverrides: CaptionOverrides | null,
+  ): Promise<boolean> => {
+    return updateClipEdit(clip, { caption_overrides: captionOverrides })
   }
 
   const exportClips = async (targets: Clip[]) => {
@@ -304,7 +328,13 @@ export function Review() {
           </span>
           <button
             onClick={exportKept}
-            disabled={keptCount === 0 || controlsLocked || wordsDirty || framingDirty}
+            disabled={
+              keptCount === 0 ||
+              controlsLocked ||
+              wordsDirty ||
+              framingDirty ||
+              captionLayoutDirty
+            }
             className="btn btn-primary"
           >
             Export kept
@@ -318,14 +348,16 @@ export function Review() {
         </div>
       )}
 
-      {(dirtyBlockedMessage || wordsDirty || framingDirty) && (
+      {(dirtyBlockedMessage || wordsDirty || framingDirty || captionLayoutDirty) && (
         <p
           role="alert"
           className="mt-4 max-w-3xl border-l-2 border-sodium-500 bg-ink-850/70 py-2 pl-3 pr-4 text-xs text-sodium-500"
         >
           {dirtyBlockedMessage || (framingDirty
             ? 'Apply or discard framing changes before switching clips, trimming, changing ratio or mode, or exporting.'
-            : 'Save caption changes before trimming or exporting.')}
+            : captionLayoutDirty
+              ? 'Apply or discard caption layout changes before switching clips, trimming, changing style, ratio, or mode, or exporting.'
+              : 'Save caption changes before trimming or exporting.')}
         </p>
       )}
 
@@ -370,6 +402,7 @@ export function Review() {
                   ratio={selected.ratio}
                   cropPath={cropPath}
                   burnCaptions={burnCaptions}
+                  captionOverrides={selected.caption_overrides}
                 />
                 {selectedManualFraming && (
                   <FramingEditor
@@ -378,7 +411,7 @@ export function Review() {
                     startS={selected.start_s}
                     framing={selectedManualFraming}
                     cropPath={cropPath}
-                    disabled={controlsLocked}
+                    disabled={controlsLocked || captionLayoutDirty}
                     onDirtyChange={(dirty) => {
                       if (selectedIdRef.current !== selected.id) return
                       setFramingDirty(dirty)
@@ -394,7 +427,7 @@ export function Review() {
                   originalStart={selected.start_s}
                   originalEnd={selected.end_s}
                   onCommit={commitTrim}
-                  disabled={controlsLocked || wordsDirty || framingDirty}
+                  disabled={controlsLocked || wordsDirty || framingDirty || captionLayoutDirty}
                 />
               </>
             )}
@@ -466,6 +499,22 @@ export function Review() {
                   </div>
                 </div>
 
+                <CaptionLayoutEditor
+                  key={`${selected.id}:${selected.caption_style}`}
+                  clipId={selected.id}
+                  style={activeStyle}
+                  overrides={selected.caption_overrides}
+                  disabled={controlsLocked}
+                  onDirtyChange={(dirty) => {
+                    if (selectedIdRef.current !== selected.id) return
+                    setCaptionLayoutDirty(dirty)
+                    if (!dirty) setDirtyBlockedMessage(null)
+                  }}
+                  onCommit={(nextOverrides) =>
+                    setCaptionOverrides(selected, nextOverrides)
+                  }
+                />
+
                 <div>
                   <p className="eyebrow border-b border-ink-800 pb-2">Aspect ratio</p>
                   <div className="mt-3 flex gap-2">
@@ -533,7 +582,9 @@ export function Review() {
                 <div className="border-t border-ink-800 pt-6">
                   <button
                     onClick={() => exportClips([selected])}
-                    disabled={controlsLocked || wordsDirty || framingDirty}
+                    disabled={
+                      controlsLocked || wordsDirty || framingDirty || captionLayoutDirty
+                    }
                     className="btn btn-primary w-full"
                   >
                     {exporting.has(selected.id) ? 'Rendering…' : 'Export this clip'}
