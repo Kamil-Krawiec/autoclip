@@ -28,6 +28,7 @@ class SourceOut(BaseModel):
     fps: float | None = None
     has_audio: bool
     has_video: bool
+    library_path: str | None = None
     created_at: str
 
     @classmethod
@@ -47,8 +48,27 @@ class SourceOut(BaseModel):
             fps=source.fps,
             has_audio=source.has_audio,
             has_video=source.has_video,
+            library_path=source.library_path,
             created_at=source.created_at,
         )
+
+
+class LibraryEntryOut(BaseModel):
+    path: str
+    name: str
+    is_dir: bool
+    size_bytes: int | None = None
+
+
+class LibraryOut(BaseModel):
+    available: bool
+    directory: str
+    entries: list[LibraryEntryOut]
+    truncated: bool
+
+
+class LibraryImportIn(BaseModel):
+    path: str
 
 
 class YouTubeIngestIn(BaseModel):

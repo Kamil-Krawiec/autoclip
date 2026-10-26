@@ -34,8 +34,8 @@ def create_source(source: Source) -> Source:
             """
             INSERT INTO sources (id, type, url, filename, path, title, channel,
                                  duration_s, width, height, fps, has_audio,
-                                 has_video, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                 has_video, created_at, library_path)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 source.id,
@@ -52,6 +52,7 @@ def create_source(source: Source) -> Source:
                 int(source.has_audio),
                 int(source.has_video),
                 source.created_at,
+                source.library_path,
             ),
         )
     return source

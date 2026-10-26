@@ -18,6 +18,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from .. import library as media_library
 from .. import paths
 from ..config import Settings
 from ..config import load as load_settings
@@ -196,7 +197,7 @@ class PipelineRunner:
     def _stage_prepare(self) -> Path:
         stage = Stage.PREPARE
         self._check_cancelled()
-        source_path = Path(self.source.path)
+        source_path = media_library.media_path(self.source)
 
         if self.workspace.audio.exists() and self.workspace.audio.stat().st_size > 0:
             log.info("Reusing existing audio for job %s.", self.job.id)
@@ -301,7 +302,7 @@ class PipelineRunner:
     def _stage_reframe(self, clips: list[Clip], transcript: Transcript) -> dict[str, CropPath]:
         stage = Stage.REFRAME
         self._check_cancelled()
-        source_path = Path(self.source.path)
+        source_path = media_library.media_path(self.source)
 
         crop_paths: dict[str, CropPath] = {}
 
@@ -358,7 +359,7 @@ class PipelineRunner:
 
         style = captions.get_style(self.settings.export.caption_style)
         ratio = self.settings.export.ratio
-        source_path = Path(self.source.path)
+        source_path = media_library.media_path(self.source)
         destination_dir = paths.exports_dir() / self.job.id
         destination_dir.mkdir(parents=True, exist_ok=True)
 
@@ -412,7 +413,7 @@ class PipelineRunner:
         from .reframe.croppath import centre_crop
 
         width, height = export.ratio_dimensions(ratio)
-        info = ffmpeg.probe(Path(self.source.path))
+        info = ffmpeg.probe(media_library.media_path(self.source))
         return centre_crop(
             info.width or width,
             info.height or height,

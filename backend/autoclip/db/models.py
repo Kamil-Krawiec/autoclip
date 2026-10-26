@@ -44,6 +44,7 @@ class Source:
     fps: float | None = None
     has_audio: bool = True
     has_video: bool = True
+    library_path: str | None = None
     created_at: str = field(default_factory=utcnow)
 
     @classmethod
@@ -62,8 +63,16 @@ class Source:
             fps=row["fps"],
             has_audio=bool(row["has_audio"]),
             has_video=bool(row["has_video"]),
+            library_path=_optional_library_path(row),
             created_at=row["created_at"],
         )
+
+
+def _optional_library_path(row: sqlite3.Row) -> str | None:
+    try:
+        return row["library_path"]
+    except (IndexError, KeyError):
+        return None
 
 
 @dataclass
