@@ -162,7 +162,7 @@ Compose file, place media under `docker/media/`, choose a folder and file, then
 it. Keep it in place for processing, preview and export. Symlinks are excluded;
 uploaded files remain managed copies in `/data`.
 
-### Caption styles
+### Caption presets
 
 In **Review**, **Subtitles** turns burned captions on or off. **Framing → Fit +
 blurred background** keeps the whole source image visible inside the selected
@@ -171,7 +171,11 @@ a centred crop. These choices are saved per clip and used by the export.
 Save transcript corrections before trimming, changing clips or exporting.
 Editing controls are locked while saves and exports are in progress.
 
-**Caption layout** adjusts size and horizontal/vertical position for each clip.
+Choose **Karaoke Lower** or **Bold Pop Lower** for ready-made captions near the
+bottom of the frame. Selecting a preset restores its own layout, clearing any
+manual caption layout override. Opening an existing project preserves its look.
+
+**Advanced / legacy caption layout** retains manual size and position controls.
 Choose **Apply caption layout** to save and update the preview, **Discard caption
 layout** to restore saved values, or **Reset caption layout** to use the preset.
 Size is a percentage of video height; position uses the caption block's bottom
@@ -185,6 +189,8 @@ saved crop used for export. **Discard framing changes** restores saved values.
 
 | style | look |
 |---|---|
+| `karaoke_lower` | word-timed green karaoke near the bottom |
+| `bold_pop_lower` | bold word-pop captions near the bottom |
 | `bold_pop` | chunky white, heavy outline, spoken word grows and turns yellow |
 | `karaoke_fill` | words fill with colour exactly as they're spoken |
 | `clean_lower` | minimal lower third, no animation |

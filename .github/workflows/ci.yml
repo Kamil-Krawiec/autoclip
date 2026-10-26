@@ -35,7 +35,23 @@ jobs:
 
       - name: Install ffmpeg (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+        shell: bash
+        run: |
+          for apt_source in /etc/apt/apt-mirrors.txt /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+            if [ -f "$apt_source" ]; then
+              sudo sed -i 's/azure[.]archive[.]ubuntu[.]com/archive.ubuntu.com/g' "$apt_source"
+            fi
+          done
+          sudo apt-get \
+            -o Acquire::Retries=2 \
+            -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30 \
+            update
+          sudo apt-get \
+            -o Acquire::Retries=2 \
+            -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30 \
+            install -y ffmpeg
 
       - name: Install ffmpeg (macOS)
         if: runner.os == 'macOS'

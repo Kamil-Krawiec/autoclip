@@ -24,6 +24,15 @@ import { TrimBar } from '../components/TrimBar'
 
 const RATIOS = ['9:16', '1:1', '16:9'] as const
 
+function canonicalCaptionOverridesKey(overrides: CaptionOverrides | null | undefined): string {
+  if (!overrides) return 'null'
+  return JSON.stringify({
+    size_ratio: overrides.size_ratio ?? null,
+    position_x: overrides.position_x ?? null,
+    position_y: overrides.position_y ?? null,
+  })
+}
+
 export function Review() {
   const { jobId } = useParams()
   const [job, setJob] = useState<Job | null>(null)
@@ -239,7 +248,7 @@ export function Review() {
 
   const setStyle = async (clip: Clip, styleKey: string) => {
     if (guardCaptionLayoutDraft('changing caption style')) return
-    await updateClipEdit(clip, { caption_style: styleKey })
+    await updateClipEdit(clip, { caption_style: styleKey, caption_overrides: null })
   }
 
   const setRatio = async (clip: Clip, ratio: string) => {
@@ -464,7 +473,7 @@ export function Review() {
 
                 <div>
                   <div className="flex items-center justify-between border-b border-ink-800 pb-2">
-                    <p className="eyebrow">Caption style</p>
+                    <p className="eyebrow">Caption presets</p>
                     <label className="flex cursor-pointer items-center gap-2 text-xs text-ink-200">
                       <input
                         type="checkbox"
@@ -476,6 +485,11 @@ export function Review() {
                       <span>Subtitles</span>
                     </label>
                   </div>
+                  {selected.caption_overrides && (
+                    <p className="mt-2 text-xs text-sodium-500">
+                      Custom layout active; choose a preset to restore its layout.
+                    </p>
+                  )}
                   <div className="mt-3 space-y-1">
                     {styles.map((style) => (
                       <button
@@ -499,21 +513,28 @@ export function Review() {
                   </div>
                 </div>
 
-                <CaptionLayoutEditor
-                  key={`${selected.id}:${selected.caption_style}`}
-                  clipId={selected.id}
-                  style={activeStyle}
-                  overrides={selected.caption_overrides}
-                  disabled={controlsLocked}
-                  onDirtyChange={(dirty) => {
-                    if (selectedIdRef.current !== selected.id) return
-                    setCaptionLayoutDirty(dirty)
-                    if (!dirty) setDirtyBlockedMessage(null)
-                  }}
-                  onCommit={(nextOverrides) =>
-                    setCaptionOverrides(selected, nextOverrides)
-                  }
-                />
+                <details className="group border-t border-ink-800 pt-4">
+                  <summary className="cursor-pointer select-none text-xs uppercase tracking-wider text-ink-400 hover:text-ink-200">
+                    Advanced / legacy caption layout
+                  </summary>
+                  <div className="mt-4">
+                    <CaptionLayoutEditor
+                      key={`${selected.id}:${selected.caption_style}:${canonicalCaptionOverridesKey(selected.caption_overrides)}`}
+                      clipId={selected.id}
+                      style={activeStyle}
+                      overrides={selected.caption_overrides}
+                      disabled={controlsLocked}
+                      onDirtyChange={(dirty) => {
+                        if (selectedIdRef.current !== selected.id) return
+                        setCaptionLayoutDirty(dirty)
+                        if (!dirty) setDirtyBlockedMessage(null)
+                      }}
+                      onCommit={(nextOverrides) =>
+                        setCaptionOverrides(selected, nextOverrides)
+                      }
+                    />
+                  </div>
+                </details>
 
                 <div>
                   <p className="eyebrow border-b border-ink-800 pb-2">Aspect ratio</p>

@@ -101,7 +101,7 @@ class CaptionStyle:
         return FONT_DIR / self.font_file
 
 
-PRESETS: dict[str, CaptionStyle] = {
+_BASE_PRESETS: dict[str, CaptionStyle] = {
     "bold_pop": CaptionStyle(
         key="bold_pop",
         label="Bold Pop",
@@ -166,6 +166,26 @@ PRESETS: dict[str, CaptionStyle] = {
         box_colour="#000000",
         box_alpha=30,
     ),
+}
+
+PRESETS: dict[str, CaptionStyle] = {
+    "karaoke_lower": replace(
+        _BASE_PRESETS["karaoke_fill"],
+        key="karaoke_lower",
+        label="Karaoke Lower",
+        description="Words fill with colour near the bottom of the frame as they're spoken.",
+        size_ratio=0.048,
+        margin_v_ratio=0.12,
+    ),
+    "bold_pop_lower": replace(
+        _BASE_PRESETS["bold_pop"],
+        key="bold_pop_lower",
+        label="Bold Pop Lower",
+        description="Chunky word-pop captions tucked near the bottom of the frame.",
+        size_ratio=0.052,
+        margin_v_ratio=0.14,
+    ),
+    **_BASE_PRESETS,
 }
 
 DEFAULT_STYLE = "bold_pop"

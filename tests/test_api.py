@@ -73,10 +73,12 @@ class TestHealthAndSystem:
 
 
 class TestCaptionStyles:
-    def test_lists_all_four(self, client: TestClient) -> None:
+    def test_lists_all_presets(self, client: TestClient) -> None:
         styles = client.get("/api/caption-styles").json()
 
         assert {s["key"] for s in styles} == {
+            "karaoke_lower",
+            "bold_pop_lower",
             "bold_pop",
             "karaoke_fill",
             "clean_lower",
