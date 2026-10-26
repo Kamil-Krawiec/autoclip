@@ -83,6 +83,8 @@ class TestColour:
 class TestPresets:
     def test_all_four_presets_exist(self) -> None:
         assert set(captions.PRESETS) == {
+            "karaoke_lower",
+            "bold_pop_lower",
             "bold_pop",
             "karaoke_fill",
             "clean_lower",
