@@ -156,6 +156,12 @@ you leave the page. Transfers are limited to 8 GiB including multipart
 overhead. Choose **Existing source → Process again** to skip uploading a saved
 file, or **Open clips** to continue editing a completed analysis.
 
+**Server media library** browses the read-only `/media` mount. With the supplied
+Compose file, place media under `docker/media/`, choose a folder and file, then
+**Process file**. AutoClip validates and uses the original file without copying
+it. Keep it in place for processing, preview and export. Symlinks are excluded;
+uploaded files remain managed copies in `/data`.
+
 ### Caption styles
 
 In **Review**, **Subtitles** turns burned captions on or off. **Framing → Fit +

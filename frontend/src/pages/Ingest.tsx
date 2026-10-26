@@ -13,8 +13,9 @@ import {
   type UploadProgress,
 } from '../api'
 import { ErrorNote } from '../components/ErrorNote'
+import { LibraryPicker } from '../components/LibraryPicker'
 
-type BusyKind = 'url' | 'file' | 'existing'
+type BusyKind = 'url' | 'file' | 'existing' | 'library'
 type FilePhase = 'uploading' | 'validating' | 'starting'
 
 interface UploadTransferState {
@@ -248,6 +249,11 @@ export function Ingest() {
     void start('existing', () => Promise.resolve({ id: selectedSourceId }))
   }
 
+  const submitLibrary = (path: string) => {
+    if (!path) return
+    void start('library', () => api.importLibrary(path))
+  }
+
   const usableProvider = providers.find((p) => p.available)
   const recentDoneJobForSelected = selectedSourceId
     ? jobs.find((j) => j.source_id === selectedSourceId && j.status === 'done')
@@ -276,7 +282,7 @@ export function Ingest() {
         </h1>
       </div>
 
-      <div className="mt-16 grid gap-x-16 gap-y-12 lg:grid-cols-[1.35fr_1fr]">
+      <div className="mt-16 grid grid-cols-1 gap-x-16 gap-y-12 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">
         {/* URL */}
         <section className="rise" style={{ animationDelay: '90ms' }}>
           <form onSubmit={submitUrl}>
@@ -519,6 +525,12 @@ export function Ingest() {
               if (file) submitFile(file)
               e.target.value = ''
             }}
+          />
+
+          <LibraryPicker
+            disabled={isBusy}
+            busy={busy === 'library'}
+            onSelect={submitLibrary}
           />
         </section>
       </div>
