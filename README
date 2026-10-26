@@ -156,6 +156,11 @@ a centred crop. These choices are saved per clip and used by the export.
 Save transcript corrections before trimming, changing clips or exporting.
 Editing controls are locked while saves and exports are in progress.
 
+Choose **Manual** to move the crop over the full source image and zoom from
+1× to 4×. Dragging saves once on release; keyboard sliders use **Apply framing**.
+The draft rectangle is approximate until applied; the main player shows the
+saved crop used for export. **Discard framing changes** restores saved values.
+
 | style | look |
 |---|---|
 | `bold_pop` | chunky white, heavy outline, spoken word grows and turns yellow |

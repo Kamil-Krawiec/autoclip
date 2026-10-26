@@ -54,7 +54,14 @@ export interface Framing {
   mode: 'fit'
 }
 
-export type ClipFraming = Framing | null
+export interface ManualFraming {
+  mode: 'manual'
+  center_x: number
+  center_y: number
+  zoom: number
+}
+
+export type ClipFraming = Framing | ManualFraming | null
 
 export interface Clip {
   id: string

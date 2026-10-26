@@ -11,11 +11,13 @@ import {
   type ClipFraming,
   type CropPath,
   type Job,
+  type ManualFraming,
   type Word,
 } from '../api'
 import { CaptionEditor } from '../components/CaptionEditor'
 import { ClipPlayer } from '../components/ClipPlayer'
 import { ErrorNote } from '../components/ErrorNote'
+import { FramingEditor } from '../components/FramingEditor'
 import { TrimBar } from '../components/TrimBar'
 
 const RATIOS = ['9:16', '1:1', '16:9'] as const
@@ -29,6 +31,7 @@ export function Review() {
   const [words, setWords] = useState<Word[]>([])
   const [cropPath, setCropPath] = useState<CropPath | null>(null)
   const [wordsDirty, setWordsDirty] = useState(false)
+  const [framingDirty, setFramingDirty] = useState(false)
   const [savingWords, setSavingWords] = useState(false)
   const [savingSettings, setSavingSettings] = useState(false)
   const [trimming, setTrimming] = useState(false)
@@ -59,7 +62,13 @@ export function Review() {
 
   const selectedClipId = selected?.id ?? null
   const selectedRatio = selected?.ratio ?? null
+  const selectedFraming = selected?.framing ?? null
   const selectedFramingMode = selected?.framing?.mode ?? null
+  const selectedManualFraming =
+    selectedFraming?.mode === 'manual' ? selectedFraming : null
+  const selectedCenterX = selectedManualFraming?.center_x ?? null
+  const selectedCenterY = selectedManualFraming?.center_y ?? null
+  const selectedZoom = selectedManualFraming?.zoom ?? null
   const selectedStartS = selected?.start_s ?? null
   const selectedEndS = selected?.end_s ?? null
 
@@ -70,6 +79,7 @@ export function Review() {
     }
     let cancelled = false
     setWordsDirty(false)
+    setFramingDirty(false)
     setDirtyBlockedMessage(null)
     setWords([])
     api
@@ -113,7 +123,16 @@ export function Review() {
     return () => {
       cancelled = true
     }
-  }, [selectedClipId, selectedRatio, selectedFramingMode, selectedStartS, selectedEndS])
+  }, [
+    selectedClipId,
+    selectedRatio,
+    selectedFramingMode,
+    selectedCenterX,
+    selectedCenterY,
+    selectedZoom,
+    selectedStartS,
+    selectedEndS,
+  ])
 
   const patchClip = useCallback((updated: Clip) => {
     setClips((current) => current.map((clip) => (clip.id === updated.id ? updated : clip)))
@@ -122,6 +141,10 @@ export function Review() {
   const editsPending = savingWords || savingSettings || trimming
   const controlsLocked = editsPending || exportPending
   const guardDirtyCaptions = (actionLabel: string): boolean => {
+    if (framingDirty) {
+      setDirtyBlockedMessage(`Apply or discard framing changes before ${actionLabel}.`)
+      return true
+    }
     if (!wordsDirty) return false
     setDirtyBlockedMessage(
       `Save caption changes before ${actionLabel} so your edited words are not lost.`,
@@ -184,14 +207,16 @@ export function Review() {
     }
   }
 
-  const updateClipEdit = async (clip: Clip, patch: ClipEditPatch) => {
-    if (editsPending || exportLock.current) return
+  const updateClipEdit = async (clip: Clip, patch: ClipEditPatch): Promise<boolean> => {
+    if (editsPending || exportLock.current) return false
     setSavingSettings(true)
     setError(null)
     try {
       patchClip(await api.patchEdit(clip.id, patch))
+      return true
     } catch (err) {
       setError(err as Error)
+      return false
     } finally {
       setSavingSettings(false)
     }
@@ -202,6 +227,7 @@ export function Review() {
   }
 
   const setRatio = async (clip: Clip, ratio: string) => {
+    if (guardDirtyCaptions('changing aspect ratio')) return
     await updateClipEdit(clip, { ratio })
   }
 
@@ -209,8 +235,9 @@ export function Review() {
     await updateClipEdit(clip, { burn_captions: burnCaptions })
   }
 
-  const setFraming = async (clip: Clip, framing: ClipFraming) => {
-    await updateClipEdit(clip, { framing })
+  const setFraming = async (clip: Clip, framing: ClipFraming): Promise<boolean> => {
+    if (guardDirtyCaptions('changing framing mode')) return false
+    return updateClipEdit(clip, { framing })
   }
 
   const exportClips = async (targets: Clip[]) => {
@@ -242,6 +269,12 @@ export function Review() {
   const activeStyle = styles.find((style) => style.key === selected?.caption_style)
   const burnCaptions = selected?.burn_captions ?? true
   const framingMode = selected?.framing?.mode ?? 'auto'
+  const hasVideoSource = Boolean(
+    job?.source?.has_video &&
+      ((job.source.width && job.source.height) ||
+        (cropPath && cropPath.source_width > 0 && cropPath.source_height > 0)),
+  )
+  const defaultManualFraming: ManualFraming = { mode: 'manual', center_x: 0.5, center_y: 0.5, zoom: 1 }
 
   if (error && clips.length === 0) {
     return (
@@ -271,7 +304,7 @@ export function Review() {
           </span>
           <button
             onClick={exportKept}
-            disabled={keptCount === 0 || controlsLocked || wordsDirty}
+            disabled={keptCount === 0 || controlsLocked || wordsDirty || framingDirty}
             className="btn btn-primary"
           >
             Export kept
@@ -285,12 +318,14 @@ export function Review() {
         </div>
       )}
 
-      {(dirtyBlockedMessage || wordsDirty) && (
+      {(dirtyBlockedMessage || wordsDirty || framingDirty) && (
         <p
           role="alert"
           className="mt-4 max-w-3xl border-l-2 border-sodium-500 bg-ink-850/70 py-2 pl-3 pr-4 text-xs text-sodium-500"
         >
-          {dirtyBlockedMessage || 'Save caption changes before trimming or exporting.'}
+          {dirtyBlockedMessage || (framingDirty
+            ? 'Apply or discard framing changes before switching clips, trimming, changing ratio or mode, or exporting.'
+            : 'Save caption changes before trimming or exporting.')}
         </p>
       )}
 
@@ -336,6 +371,22 @@ export function Review() {
                   cropPath={cropPath}
                   burnCaptions={burnCaptions}
                 />
+                {selectedManualFraming && (
+                  <FramingEditor
+                    key={selected.id}
+                    src={api.mediaUrl(jobId)}
+                    startS={selected.start_s}
+                    framing={selectedManualFraming}
+                    cropPath={cropPath}
+                    disabled={controlsLocked}
+                    onDirtyChange={(dirty) => {
+                      if (selectedIdRef.current !== selected.id) return
+                      setFramingDirty(dirty)
+                      if (!dirty) setDirtyBlockedMessage(null)
+                    }}
+                    onCommit={(nextFraming) => updateClipEdit(selected, { framing: nextFraming })}
+                  />
+                )}
                 <TrimBar
                   words={words}
                   startS={selected.start_s}
@@ -343,7 +394,7 @@ export function Review() {
                   originalStart={selected.start_s}
                   originalEnd={selected.end_s}
                   onCommit={commitTrim}
-                  disabled={controlsLocked || wordsDirty}
+                  disabled={controlsLocked || wordsDirty || framingDirty}
                 />
               </>
             )}
@@ -460,13 +511,29 @@ export function Review() {
                     >
                       Fit + blurred background
                     </button>
+                    <button
+                      type="button"
+                      disabled={controlsLocked || !hasVideoSource}
+                      onClick={() =>
+                        setFraming(
+                          selected,
+                          selectedManualFraming ?? defaultManualFraming,
+                        )
+                      }
+                      className={[
+                        'btn',
+                        framingMode === 'manual' ? 'btn-primary' : 'btn-ghost',
+                      ].join(' ')}
+                    >
+                      Manual
+                    </button>
                   </div>
                 </div>
 
                 <div className="border-t border-ink-800 pt-6">
                   <button
                     onClick={() => exportClips([selected])}
-                    disabled={controlsLocked || wordsDirty}
+                    disabled={controlsLocked || wordsDirty || framingDirty}
                     className="btn btn-primary w-full"
                   >
                     {exporting.has(selected.id) ? 'Rendering…' : 'Export this clip'}

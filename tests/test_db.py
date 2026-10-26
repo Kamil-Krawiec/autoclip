@@ -307,3 +307,16 @@ def test_v1_edit_migration_preserves_data_and_reopens(tmp_path):
         assert conn.execute("SELECT path FROM exports").fetchone()[0] == "old.mp4"
     finally:
         conn.close()
+
+
+def test_manual_edit_survives_database_reopen(initialised_db):
+    source = store.create_source(_make_source())
+    job = store.create_job(Job(id=new_id(), source_id=source.id))
+    clip = Clip(id=new_id(), job_id=job.id, start_s=0, end_s=5)
+    store.replace_clips(job.id, [clip])
+    framing = {"mode": "manual", "center_x": 0.2, "center_y": 0.8, "zoom": 3}
+    store.upsert_clip_edit(ClipEdit(clip_id=clip.id, framing=framing, burn_captions=False))
+    db.reset_connections()
+    assert db.init() == initialised_db
+    loaded = store.get_clip_edit(clip.id)
+    assert loaded.framing == framing and loaded.burn_captions is False

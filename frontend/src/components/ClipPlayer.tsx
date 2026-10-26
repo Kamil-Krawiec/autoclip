@@ -223,7 +223,7 @@ export function ClipPlayer({
             tabIndex={-1}
             aria-hidden="true"
             onLoadedMetadata={() => syncBackground(true)}
-            className="pointer-events-none absolute inset-0 size-full scale-110 object-cover blur-xl brightness-75"
+            className="pointer-events-none absolute inset-0 size-full scale-110 object-cover blur-xl"
           />
         )}
 

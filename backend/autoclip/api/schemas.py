@@ -8,7 +8,7 @@ export URLs) that don't belong in storage.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -136,9 +136,20 @@ class ExportOut(BaseModel):
         )
 
 
-class FramingIn(BaseModel):
+class AutoFitFramingIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     mode: Literal["auto", "fit"]
+
+
+class ManualFramingIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["manual"]
+    center_x: float = Field(ge=0, le=1, allow_inf_nan=False, strict=True)
+    center_y: float = Field(ge=0, le=1, allow_inf_nan=False, strict=True)
+    zoom: float = Field(ge=1, le=4, allow_inf_nan=False, strict=True)
+
+
+FramingIn = Annotated[AutoFitFramingIn | ManualFramingIn, Field(discriminator="mode")]
 
 
 class ClipOut(BaseModel):
@@ -188,7 +199,7 @@ class ClipOut(BaseModel):
             caption_style=edit.caption_style if edit else "bold_pop",
             ratio=edit.ratio if edit else "9:16",
             burn_captions=edit.burn_captions if edit else True,
-            framing=FramingIn(**edit.framing) if edit and edit.framing else None,
+            framing=edit.framing if edit else None,
             exports=[ExportOut.of(e) for e in (exports or [])],
         )
 

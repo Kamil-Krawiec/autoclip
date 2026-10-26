@@ -469,6 +469,81 @@ class TestClips:
         clip = store.list_clips(job_with_clips.id)[0]
         assert client.patch(f"/api/clips/{clip.id}/edit", json=patch).status_code == 422
 
+    @pytest.mark.parametrize(
+        "framing",
+        [
+            {"mode": "manual", "center_x": 0, "center_y": 1, "zoom": 4},
+            {"mode": "manual", "center_x": 0.5, "center_y": 0.5, "zoom": 1},
+        ],
+    )
+    def test_manual_saved_legacy_merge_trim_ratio_reset_and_isolation(
+        self, client, job_with_clips, framing
+    ):
+        a, b, _ = client.get(f"/api/jobs/{job_with_clips.id}/clips").json()
+        url = f"/api/clips/{a['id']}"
+        response = client.patch(url + "/edit", json={"framing": framing, "burn_captions": False})
+        assert response.status_code == 200
+        assert response.json()["framing"] == framing
+        assert (
+            client.patch(url + "/captions", json={"words": [], "ratio": "1:1"}).json()["framing"]
+            == framing
+        )
+        from autoclip.pipeline.runner import JobWorkspace
+        from autoclip.pipeline.transcript import Transcript
+
+        Transcript().save(JobWorkspace(job_with_clips.id).transcript)
+        assert client.patch(url, json={"start_s": a["start_s"] + 1}).status_code == 200
+        assert client.get(url).json()["framing"] == framing
+        path = client.get(url + "/crop-path").json()
+        assert path["segments"][0]["end_s"] == a["duration_s"] - 1
+        assert client.get(f"/api/clips/{b['id']}").json()["framing"] is None
+        for reset in (None, {"mode": "auto"}):
+            assert client.patch(url + "/edit", json={"framing": framing}).status_code == 200
+            body = client.patch(url + "/edit", json={"framing": reset}).json()
+            assert body["framing"] is None and body["burn_captions"] is False
+            assert body["ratio"] == "1:1" and client.get(url + "/words").json() == []
+
+    @pytest.mark.parametrize(
+        "field,value",
+        [
+            ("center_x", -0.01),
+            ("center_x", 1.01),
+            ("center_y", -0.01),
+            ("center_y", 1.01),
+            ("zoom", 0.99),
+            ("zoom", 4.01),
+            ("center_x", "NaN"),
+            ("center_y", "Infinity"),
+            ("zoom", "-Infinity"),
+            ("center_x", None),
+            ("center_y", True),
+            ("zoom", "2"),
+        ],
+    )
+    def test_manual_rejects_invalid_numbers(self, client, job_with_clips, field, value):
+        clip = store.list_clips(job_with_clips.id)[0]
+        framing = {"mode": "manual", "center_x": 0.5, "center_y": 0.5, "zoom": 2, field: value}
+        assert (
+            client.patch(f"/api/clips/{clip.id}/edit", json={"framing": framing}).status_code == 422
+        )
+
+    @pytest.mark.parametrize(
+        "framing",
+        [
+            {"mode": "manual", "center_x": 0.5, "zoom": 2},
+            {"mode": "manual", "center_y": 0.5, "zoom": 2},
+            {"mode": "manual", "center_x": 0.5, "center_y": 0.5},
+            {"mode": "auto", "center_x": 0.5},
+            {"mode": "fit", "center_y": 0.5},
+            {"mode": "manual", "center_x": 0.5, "center_y": 0.5, "zoom": 2, "unknown": 0},
+        ],
+    )
+    def test_manual_rejects_incomplete_or_cross_mode_fields(self, client, job_with_clips, framing):
+        clip = store.list_clips(job_with_clips.id)[0]
+        assert (
+            client.patch(f"/api/clips/{clip.id}/edit", json={"framing": framing}).status_code == 422
+        )
+
     def test_edited_words_respect_trim_and_preserve_corrections(self, client, job_with_clips):
         clip = store.list_clips(job_with_clips.id)[0]
         url = f"/api/clips/{clip.id}"
@@ -487,7 +562,16 @@ class TestClips:
         store.update_clip(clip.id, start_s=clip.start_s)
         assert client.get(url + "/words").json() == words
 
-    def test_export_uses_saved_state_and_unique_files(self, client, job_with_clips, monkeypatch):
+    @pytest.mark.parametrize(
+        "framing",
+        [
+            {"mode": "fit"},
+            {"mode": "manual", "center_x": 1, "center_y": 0, "zoom": 4},
+        ],
+    )
+    def test_export_uses_saved_state_and_unique_files(
+        self, client, job_with_clips, monkeypatch, framing
+    ):
         from autoclip.pipeline import export
 
         clip = store.list_clips(job_with_clips.id)[0]
@@ -500,7 +584,7 @@ class TestClips:
                     "caption_style": "clean_lower",
                     "ratio": "1:1",
                     "burn_captions": False,
-                    "framing": {"mode": "fit"},
+                    "framing": framing,
                 },
             ).status_code
             == 200
@@ -518,7 +602,13 @@ class TestClips:
         assert first.status_code == second.status_code == 201
         a, b = requests[0][0], requests[1][0]
         assert a.ratio == "1:1" and a.style.key == "clean_lower" and a.burn_captions is False
-        assert a.crop_path.segments[0].fit is True
+        segment = a.crop_path.segments[0]
+        if framing["mode"] == "fit":
+            assert segment.fit is True
+        else:
+            assert (segment.width, segment.height) == (270, 270)
+            assert (segment.keyframes[0].x, segment.keyframes[0].y) == (1650, 0)
+            assert b.crop_path.segments[0].width == 480
         assert a.crop_path.to_dict() == client.get(url + "/crop-path").json()
         assert b.ratio == "16:9" and b.style.key == "bold_pop"
         assert a.destination != b.destination and requests[0][1] != requests[1][1]
@@ -597,3 +687,14 @@ class TestSecretsNeverLeak:
 
         assert "DEADBEEF" not in paths.config_path().read_text(encoding="utf-8")
         assert config.get_secret("anthropic") == "sk-DEADBEEF"
+
+
+@pytest.mark.parametrize("field", ["center_x", "center_y", "zoom"])
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+def test_manual_wire_schema_rejects_nonfinite_numbers(field, value):
+    from autoclip.api.schemas import EditPatchIn
+    from pydantic import ValidationError
+
+    framing = {"mode": "manual", "center_x": 0.5, "center_y": 0.5, "zoom": 2, field: value}
+    with pytest.raises(ValidationError):
+        EditPatchIn.model_validate({"framing": framing})
