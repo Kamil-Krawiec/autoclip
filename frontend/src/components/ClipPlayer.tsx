@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import {
   formatTimecode,
+  type CaptionOverrides,
   type CaptionStyle,
   type CropPath,
   type CropSegment,
@@ -42,6 +43,7 @@ export function ClipPlayer({
   ratio,
   cropPath,
   burnCaptions = true,
+  captionOverrides,
 }: {
   src: string
   startS: number
@@ -51,6 +53,7 @@ export function ClipPlayer({
   ratio: string
   cropPath?: CropPath | null
   burnCaptions?: boolean
+  captionOverrides?: CaptionOverrides | null
 }) {
   const video = useRef<HTMLVideoElement>(null)
   const bgVideo = useRef<HTMLVideoElement>(null)
@@ -201,7 +204,7 @@ export function ClipPlayer({
     <div className="mx-auto flex w-full flex-col items-stretch" style={{ maxWidth }}>
       <div
         className="relative w-full overflow-hidden bg-ink-850"
-        style={{ aspectRatio: `${aspectW} / ${aspectH}` }}
+        style={{ aspectRatio: `${aspectW} / ${aspectH}`, containerType: 'size' }}
         onClick={toggle}
         role="button"
         tabIndex={0}
@@ -255,7 +258,12 @@ export function ClipPlayer({
         />
 
         {burnCaptions && (
-          <CaptionOverlay words={words} time={time} style={style} />
+          <CaptionOverlay
+            words={words}
+            time={time}
+            style={style}
+            captionOverrides={captionOverrides}
+          />
         )}
 
         {!playing && (
@@ -563,10 +571,12 @@ function CaptionOverlay({
   words,
   time,
   style,
+  captionOverrides,
 }: {
   words: Word[]
   time: number
   style: CaptionStyle | undefined
+  captionOverrides?: CaptionOverrides | null
 }) {
   if (!style || words.length === 0) return null
 
@@ -574,18 +584,58 @@ function CaptionOverlay({
   const active = groups.find((group) => time >= group[0].start && time <= group[group.length - 1].end)
   if (!active) return null
 
-  const { primary, accent, allCaps, outlineWidth, boxed, marginRatio, sizeRatio } = style.preview
+  const {
+    primary,
+    accent,
+    allCaps,
+    outlineWidth,
+    boxed,
+    marginRatio,
+    sizeRatio,
+    positionX,
+    positionY,
+  } = style.preview
+
+  const hasSizeOverride = Number.isFinite(captionOverrides?.size_ratio)
+  const resolvedSizeRatio = hasSizeOverride ? captionOverrides!.size_ratio! : sizeRatio
+  const resolvedX = Number.isFinite(captionOverrides?.position_x)
+    ? captionOverrides!.position_x!
+    : Number.isFinite(positionX)
+      ? positionX!
+      : null
+  const resolvedY = Number.isFinite(captionOverrides?.position_y)
+    ? captionOverrides!.position_y!
+    : Number.isFinite(positionY)
+      ? positionY!
+      : null
+  const useBottomCenterAnchor = resolvedX !== null || resolvedY !== null
+  const anchorX = resolvedX ?? 0.5
+  const anchorY = resolvedY ?? 1 - marginRatio
 
   return (
     <div
-      className="pointer-events-none absolute inset-x-0 z-20 flex justify-center px-[6%]"
-      style={{ bottom: `${marginRatio * 100}%` }}
+      className={
+        useBottomCenterAnchor
+          ? 'pointer-events-none absolute z-20 flex w-[94%] justify-center'
+          : 'pointer-events-none absolute inset-x-0 z-20 flex justify-center px-[6%]'
+      }
+      style={
+        useBottomCenterAnchor
+          ? {
+              left: `${anchorX * 100}%`,
+              top: `${anchorY * 100}%`,
+              transform: 'translate(-50%, -100%)',
+            }
+          : { bottom: `${marginRatio * 100}%` }
+      }
     >
       <p
-        className="text-center leading-[1.15]"
+        className="min-w-0 wrap-anywhere text-center leading-[1.15]"
         style={{
           fontFamily: style.preview.font === 'Anton' ? 'Anton, Impact, sans-serif' : undefined,
-          fontSize: `clamp(0.75rem, ${sizeRatio * 100}cqh, 4rem)`,
+          fontSize: hasSizeOverride
+            ? `${resolvedSizeRatio * 100}cqh`
+            : `clamp(0.75rem, ${resolvedSizeRatio * 100}cqh, 4rem)`,
           fontWeight: boxed || style.preview.font === 'Anton' ? 400 : 600,
           textTransform: allCaps ? 'uppercase' : 'none',
           color: primary,

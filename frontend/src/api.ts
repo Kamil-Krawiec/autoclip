@@ -78,6 +78,12 @@ export interface ManualFraming {
 
 export type ClipFraming = Framing | ManualFraming | null
 
+export interface CaptionOverrides {
+  size_ratio?: number
+  position_x?: number
+  position_y?: number
+}
+
 export interface Clip {
   id: string
   job_id: string
@@ -97,6 +103,7 @@ export interface Clip {
   ratio: string
   burn_captions?: boolean
   framing?: ClipFraming
+  caption_overrides?: CaptionOverrides | null
   exports: ExportRecord[]
 }
 
@@ -106,6 +113,7 @@ export interface ClipEditPatch {
   ratio?: string
   burn_captions?: boolean
   framing?: ClipFraming
+  caption_overrides?: CaptionOverrides | null
 }
 
 export interface Word {
@@ -152,6 +160,8 @@ export interface CaptionStyle {
     allCaps: boolean
     sizeRatio: number
     marginRatio: number
+    positionX?: number
+    positionY?: number
     boxed: boolean
     animation: string
     maxWords: number
