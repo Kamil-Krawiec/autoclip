@@ -4,15 +4,35 @@ import { useNavigate } from 'react-router-dom'
 import {
   ApiError,
   api,
+  formatBytes,
   formatDuration,
   type Job,
   type JobSettingsOverrides,
   type ProviderStatus,
   type Source,
+  type UploadProgress,
 } from '../api'
 import { ErrorNote } from '../components/ErrorNote'
 
 type BusyKind = 'url' | 'file' | 'existing'
+type FilePhase = 'uploading' | 'validating' | 'starting'
+
+interface UploadTransferState {
+  filename: string
+  loaded: number
+  total: number
+  lengthComputable: boolean
+  phase: FilePhase
+  speedBps: number | null
+  etaSeconds: number | null
+}
+
+function isAbortError(err: unknown): boolean {
+  return (
+    (err instanceof DOMException && err.name === 'AbortError') ||
+    (err instanceof Error && err.name === 'AbortError')
+  )
+}
 
 export function Ingest() {
   const navigate = useNavigate()
@@ -20,6 +40,8 @@ export function Ingest() {
   const [busy, setBusy] = useState<BusyKind | null>(null)
   const busyRef = useRef(false)
   const [error, setError] = useState<ApiError | Error | null>(null)
+  const [statusNote, setStatusNote] = useState<string | null>(null)
+  const [uploadState, setUploadState] = useState<UploadTransferState | null>(null)
   const [jobs, setJobs] = useState<Job[]>([])
   const [sources, setSources] = useState<Source[]>([])
   const [sourcesLoading, setSourcesLoading] = useState(true)
@@ -30,6 +52,18 @@ export function Ingest() {
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [dragging, setDragging] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
+  const uploadAbortRef = useRef<AbortController | null>(null)
+  const mountedRef = useRef(true)
+  const speedSampleRef = useRef<{ startedAt: number; lastAt: number; lastLoaded: number; emaBps: number | null } | null>(null)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      uploadAbortRef.current?.abort()
+      uploadAbortRef.current = null
+    }
+  }, [])
 
   const loadSources = useCallback(() => {
     setSourcesLoading(true)
@@ -62,15 +96,22 @@ export function Ingest() {
       busyRef.current = true
       setBusy(kind)
       setError(null)
+      setStatusNote(null)
+      const jobOverrides = { ...overrides }
       try {
         const source = await run()
-        const job = await api.createJob(source.id, overrides)
+        if (!mountedRef.current) return
+        const job = await api.createJob(source.id, jobOverrides)
+        if (!mountedRef.current) return
         navigate(`/jobs/${job.id}`)
       } catch (err) {
+        if (!mountedRef.current) return
         setError(err as Error)
       } finally {
         busyRef.current = false
-        setBusy(null)
+        if (mountedRef.current) {
+          setBusy(null)
+        }
       }
     },
     [navigate, overrides],
@@ -84,7 +125,121 @@ export function Ingest() {
 
   const submitFile = (file: File) => {
     if (busyRef.current) return
-    void start('file', () => api.uploadSource(file))
+    busyRef.current = true
+    setBusy('file')
+    setError(null)
+    setStatusNote(null)
+
+    const jobOverrides = { ...overrides }
+    const controller = new AbortController()
+    uploadAbortRef.current = controller
+    const now = performance.now()
+    speedSampleRef.current = {
+      startedAt: now,
+      lastAt: now,
+      lastLoaded: 0,
+      emaBps: null,
+    }
+
+    setUploadState({
+      filename: file.name,
+      loaded: 0,
+      total: file.size,
+      lengthComputable: file.size > 0,
+      phase: 'uploading',
+      speedBps: null,
+      etaSeconds: null,
+    })
+
+    const handleProgress = (prog: UploadProgress) => {
+      if (!mountedRef.current || controller.signal.aborted) return
+      const timestamp = performance.now()
+      const sample = speedSampleRef.current
+      let speedBps: number | null = null
+      let etaSeconds: number | null = null
+
+      if (sample && !prog.uploadComplete) {
+        const dt = (timestamp - sample.lastAt) / 1000
+        const dBytes = prog.loaded - sample.lastLoaded
+        if (dt >= 0.15 && dBytes >= 0) {
+          const instantBps = dBytes / dt
+          sample.emaBps =
+            sample.emaBps === null ? instantBps : sample.emaBps * 0.7 + instantBps * 0.3
+          sample.lastAt = timestamp
+          sample.lastLoaded = prog.loaded
+        }
+        const elapsed = (timestamp - sample.startedAt) / 1000
+        if (elapsed >= 0.4 && prog.loaded >= 32 * 1024 && sample.emaBps && sample.emaBps > 0) {
+          speedBps = sample.emaBps
+          if (prog.lengthComputable && prog.total > prog.loaded) {
+            etaSeconds = (prog.total - prog.loaded) / speedBps
+          }
+        }
+      }
+
+      const isComplete =
+        Boolean(prog.uploadComplete) ||
+        (prog.lengthComputable && prog.total > 0 && prog.loaded >= prog.total)
+
+      setUploadState({
+        filename: file.name,
+        loaded: prog.loaded,
+        total: prog.total,
+        lengthComputable: prog.lengthComputable,
+        phase: isComplete ? 'validating' : 'uploading',
+        speedBps: isComplete ? null : speedBps,
+        etaSeconds: isComplete ? null : etaSeconds,
+      })
+    }
+
+    void (async () => {
+      try {
+        const source = await api.uploadSource(file, {
+          onProgress: handleProgress,
+          signal: controller.signal,
+        })
+        if (!mountedRef.current) return
+        if (controller.signal.aborted) {
+          setStatusNote('Upload cancelled')
+          return
+        }
+        uploadAbortRef.current = null
+        setUploadState((prev) =>
+          prev
+            ? { ...prev, phase: 'starting', speedBps: null, etaSeconds: null }
+            : null,
+        )
+        const job = await api.createJob(source.id, jobOverrides)
+        if (!mountedRef.current) return
+        navigate(`/jobs/${job.id}`)
+      } catch (err) {
+        if (!mountedRef.current) return
+        if (isAbortError(err) || controller.signal.aborted) {
+          setStatusNote('Upload cancelled')
+        } else {
+          setError(err as Error)
+        }
+      } finally {
+        if (uploadAbortRef.current === controller) {
+          uploadAbortRef.current = null
+        }
+        speedSampleRef.current = null
+        busyRef.current = false
+        if (mountedRef.current) {
+          setBusy(null)
+          setUploadState(null)
+          if (fileInput.current) {
+            fileInput.current.value = ''
+          }
+        }
+      }
+    })()
+  }
+
+  const cancelUpload = () => {
+    const controller = uploadAbortRef.current
+    if (!controller) return
+    controller.abort()
   }
 
   const submitExisting = (event: React.FormEvent) => {
@@ -98,6 +253,15 @@ export function Ingest() {
     ? jobs.find((j) => j.source_id === selectedSourceId && j.status === 'done')
     : undefined
   const isBusy = busy !== null
+  const canCancelUpload =
+    busy === 'file' &&
+    uploadState !== null &&
+    uploadState.phase === 'uploading' &&
+    uploadAbortRef.current !== null
+  const uploadPercent =
+    uploadState && uploadState.lengthComputable && uploadState.total > 0
+      ? Math.min(100, Math.round((uploadState.loaded / uploadState.total) * 100))
+      : null
 
   return (
     <div className="pt-14">
@@ -252,11 +416,97 @@ export function Ingest() {
               }
             }}
           >
-            <span className="font-display text-2xl text-ink-200">
-              {busy === 'file' ? 'Uploading…' : 'Drop video or audio'}
+            <span role="status" aria-live="polite" className="font-display text-2xl text-ink-200">
+              {busy === 'file'
+                ? uploadState?.phase === 'validating'
+                  ? 'Validating media…'
+                  : uploadState?.phase === 'starting'
+                    ? 'Starting job…'
+                    : 'Uploading…'
+                : 'Drop video or audio'}
             </span>
             <span className="text-xs text-ink-500">mp4 · mov · mkv · webm · mp3 · wav · m4a</span>
           </div>
+
+          {busy === 'file' && uploadState && (
+            <div className="mt-4 border border-ink-800 bg-ink-850/40 p-4">
+              <div className="flex items-baseline justify-between gap-4">
+                <span className="truncate text-xs text-ink-200" title={uploadState.filename}>
+                  {uploadState.filename}
+                </span>
+                <span className="numeric shrink-0 text-xs text-ink-400">
+                  {uploadState.phase === 'validating'
+                    ? 'Validating media…'
+                    : uploadState.phase === 'starting'
+                      ? 'Starting job…'
+                      : uploadPercent !== null
+                        ? `${uploadPercent}%`
+                        : formatBytes(uploadState.loaded)}
+                </span>
+              </div>
+
+              <div
+                role="progressbar"
+                aria-label="File upload progress"
+                aria-valuemin={0}
+                aria-valuemax={uploadPercent !== null ? 100 : undefined}
+                aria-valuenow={uploadPercent !== null ? uploadPercent : undefined}
+                aria-valuetext={
+                  uploadState.phase === 'validating'
+                    ? 'Validating media'
+                    : uploadState.phase === 'starting'
+                      ? 'Starting job'
+                      : uploadPercent !== null
+                        ? `${uploadPercent}% (${formatBytes(uploadState.loaded)} of ${formatBytes(uploadState.total)})`
+                        : `${formatBytes(uploadState.loaded)} uploaded`
+                }
+                className="mt-2 h-1.5 w-full overflow-hidden bg-ink-800"
+              >
+                <div
+                  className={`h-full bg-sodium-500 transition-[width] duration-150 ${uploadPercent === null && uploadState.phase === 'uploading' ? 'animate-pulse' : ''}`}
+                  style={{
+                    width:
+                      uploadPercent !== null
+                        ? `${uploadPercent}%`
+                        : '100%',
+                  }}
+                />
+              </div>
+
+              <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-ink-500">
+                <span className="numeric">
+                  {uploadState.lengthComputable && uploadState.total > 0
+                    ? `${formatBytes(uploadState.loaded)} / ${formatBytes(uploadState.total)}`
+                    : `${formatBytes(uploadState.loaded)} uploaded`}
+                  {uploadState.phase === 'uploading' && uploadState.speedBps
+                    ? ` · ${formatBytes(Math.round(uploadState.speedBps))}/s`
+                    : ''}
+                  {uploadState.phase === 'uploading' &&
+                  uploadState.etaSeconds !== null &&
+                  uploadState.etaSeconds >= 1
+                    ? ` · ${formatDuration(uploadState.etaSeconds)} left`
+                    : ''}
+                </span>
+
+                {canCancelUpload && (
+                  <button
+                    type="button"
+                    onClick={cancelUpload}
+                    className="btn btn-quiet text-xs"
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {statusNote && !busy && (
+            <p role="status" className="mt-3 text-xs text-ink-400">
+              {statusNote}
+            </p>
+          )}
+
           <input
             ref={fileInput}
             type="file"

@@ -199,6 +199,18 @@ export interface JobSettingsOverrides {
   ratio?: string
 }
 
+export interface UploadProgress {
+  loaded: number
+  total: number
+  lengthComputable: boolean
+  uploadComplete?: boolean
+}
+
+export interface UploadOptions {
+  onProgress?: (progress: UploadProgress) => void
+  signal?: AbortSignal
+}
+
 /** An API error carrying the server's message and its actionable hint. */
 export class ApiError extends Error {
   hint: string
@@ -212,6 +224,28 @@ export class ApiError extends Error {
   }
 }
 
+function parseErrorBody(status: number, statusText: string, rawText: string): ApiError {
+  let message = `${status} ${statusText}`.trim() || `HTTP ${status}`
+  let hint = ''
+  try {
+    const body = JSON.parse(rawText)
+    const detail = body?.detail
+    if (typeof detail === 'string') {
+      message = detail
+    } else if (detail && typeof detail === 'object') {
+      message = detail.message ?? message
+      hint = detail.hint ?? ''
+    }
+  } catch {
+    /* Response had no JSON body; the status line is the best we have. */
+  }
+  return new ApiError(message, status, hint)
+}
+
+function makeAbortError(): DOMException {
+  return new DOMException('The operation was aborted.', 'AbortError')
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
@@ -222,23 +256,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   })
 
   if (!response.ok) {
-    let message = `${response.status} ${response.statusText}`
-    let hint = ''
-    try {
-      const body = await response.json()
-      const detail = body.detail
-      if (typeof detail === 'string') {
-        message = detail
-      } else if (detail && typeof detail === 'object') {
-        // The ingest endpoints return {message, hint} so the UI can show the
-        // fix alongside the failure.
-        message = detail.message ?? message
-        hint = detail.hint ?? ''
-      }
-    } catch {
-      /* Response had no JSON body; the status line is the best we have. */
-    }
-    throw new ApiError(message, response.status, hint)
+    const rawText = await response.text().catch(() => '')
+    throw parseErrorBody(response.status, response.statusText, rawText)
   }
 
   if (response.status === 204) return undefined as T
@@ -258,10 +277,123 @@ export const api = {
       body: JSON.stringify({ url, cookies_from_browser: cookiesFromBrowser || null }),
     }),
 
-  uploadSource: (file: File) => {
-    const form = new FormData()
-    form.append('file', file)
-    return request<Source>('/api/sources/upload', { method: 'POST', body: form })
+  uploadSource: (file: File, options: UploadOptions = {}): Promise<Source> => {
+    const { onProgress, signal } = options
+
+    return new Promise<Source>((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(makeAbortError())
+        return
+      }
+
+      const xhr = new XMLHttpRequest()
+      let settled = false
+      let lastLoaded = 0
+      let lastTotal = file.size
+      let lastComputable = file.size > 0
+
+      const cleanup = () => {
+        xhr.upload.removeEventListener('progress', handleProgress)
+        xhr.upload.removeEventListener('load', handleUploadLoad)
+        xhr.removeEventListener('load', handleLoad)
+        xhr.removeEventListener('error', handleError)
+        xhr.removeEventListener('abort', handleAbort)
+        if (signal) {
+          signal.removeEventListener('abort', handleSignalAbort)
+        }
+      }
+
+      const settle = (fn: () => void) => {
+        if (settled) return
+        settled = true
+        cleanup()
+        fn()
+      }
+
+      const handleProgress = (event: ProgressEvent<XMLHttpRequestEventTarget>) => {
+        if (settled) return
+        lastLoaded = event.loaded
+        lastTotal = event.lengthComputable ? event.total : 0
+        lastComputable = event.lengthComputable
+        onProgress?.({
+          loaded: event.loaded,
+          total: event.lengthComputable ? event.total : 0,
+          lengthComputable: event.lengthComputable,
+          uploadComplete: false,
+        })
+      }
+
+      const handleUploadLoad = () => {
+        if (settled) return
+        const total = lastComputable && lastTotal > 0 ? lastTotal : lastLoaded
+        onProgress?.({
+          loaded: total,
+          total,
+          lengthComputable: lastComputable,
+          uploadComplete: true,
+        })
+      }
+
+      const handleLoad = () => {
+        settle(() => {
+          if (signal?.aborted) {
+            reject(makeAbortError())
+            return
+          }
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              const parsed = JSON.parse(xhr.responseText) as Source
+              resolve(parsed)
+            } catch (err) {
+              reject(
+                err instanceof Error
+                  ? err
+                  : new SyntaxError('Malformed JSON response from /api/sources/upload'),
+              )
+            }
+          } else {
+            reject(parseErrorBody(xhr.status, xhr.statusText, xhr.responseText ?? ''))
+          }
+        })
+      }
+
+      const handleError = () => {
+        settle(() => {
+          reject(new TypeError('Network request failed'))
+        })
+      }
+
+      const handleAbort = () => {
+        settle(() => {
+          reject(makeAbortError())
+        })
+      }
+
+      const handleSignalAbort = () => {
+        xhr.abort()
+        settle(() => {
+          reject(makeAbortError())
+        })
+      }
+
+      xhr.open('POST', '/api/sources/upload')
+      xhr.upload.addEventListener('progress', handleProgress)
+      xhr.upload.addEventListener('load', handleUploadLoad)
+      xhr.addEventListener('load', handleLoad)
+      xhr.addEventListener('error', handleError)
+      xhr.addEventListener('abort', handleAbort)
+      if (signal) {
+        signal.addEventListener('abort', handleSignalAbort, { once: true })
+      }
+
+      try {
+        const form = new FormData()
+        form.append('file', file)
+        xhr.send(form)
+      } catch (err) {
+        settle(() => reject(err))
+      }
+    })
   },
 
   listJobs: (limit = 25) => request<Job[]>(`/api/jobs?limit=${limit}`),
