@@ -64,8 +64,7 @@ async function main() {
           notifyEditHeld()
           await new Promise(resolve => { releaseHeldEdit = resolve })
         }
-        if (patch.caption_overrides === null) clips.find(c => c.id === id).caption_overrides = null
-        else Object.assign(clips.find(c => c.id === id), patch)
+        Object.assign(clips.find(c => c.id === id), patch)
         return route.fulfill({ json: clips.find(c => c.id === id) })
       }
       if (p.endsWith('/export')) { exports.push(p); return route.fulfill({ json: { id: 'export', clip_id: 'a', ratio: '9:16', style: 'narrow', size_bytes: 1, created_at: '', download_url: '#' } }) }
@@ -78,14 +77,15 @@ async function main() {
     await page.goto(server.resolvedUrls.local[0] + 'jobs/job/clips')
     const slider = name => page.getByRole('slider', { name, exact: true })
     const button = name => page.getByRole('button', { name, exact: true })
+    await page.locator('summary', { hasText: 'Advanced / legacy caption layout' }).click()
     await slider('Caption horizontal position').waitFor()
     await page.waitForFunction(() => !document.querySelector('[aria-label="Zoom"]')?.disabled)
     await slider('Zoom').focus()
     await slider('Zoom').press('ArrowRight')
     assert.equal(await slider('Caption size').isEnabled(), true, 'framing draft does not disable caption editor')
     await page.getByRole('button', { name: /^wide/ }).click()
-    await page.waitForFunction(() => document.querySelector('[aria-label="Caption size"]')?.value === '3.4')
-    assert.deepEqual(edits[0].patch, { caption_style: 'wide' }, 'style PATCH succeeds during framing draft')
+    await eventually(() => assert.deepEqual(edits[0].patch, { caption_style: 'wide', caption_overrides: null }))
+    assert.deepEqual(edits[0].patch, { caption_style: 'wide', caption_overrides: null }, 'style PATCH succeeds during framing draft')
     assert.equal(await page.getByRole('status').filter({ hasText: 'Unsaved framing' }).count(), 1, 'style change preserves framing draft')
     await page.getByLabel('Subtitles', { exact: true }).click()
     await eventually(() => assert.equal(edits.length, 2))
@@ -96,6 +96,7 @@ async function main() {
     clips[0].caption_style = 'narrow'
     clips[0].burn_captions = true
     await page.reload()
+    await page.locator('summary', { hasText: 'Advanced / legacy caption layout' }).click()
     await slider('Caption horizontal position').waitFor()
     await page.waitForFunction(() => !document.querySelector('[aria-label="Zoom"]')?.disabled)
     edits.length = 0
@@ -114,7 +115,7 @@ async function main() {
     await page.getByText('Unsaved changes', { exact: true }).waitFor()
     await page.getByRole('button', { name: /^wide/ }).click()
     await eventually(() => assert.equal(edits.length, 1))
-    assert.deepEqual(edits[0].patch, { caption_style: 'wide' }, 'style PATCH succeeds during word draft')
+    assert.deepEqual(edits[0].patch, { caption_style: 'wide', caption_overrides: null }, 'style PATCH succeeds during word draft')
     assert.equal(await page.getByText('Unsaved changes', { exact: true }).count(), 1, 'style change preserves word draft')
     await page.getByLabel('Subtitles', { exact: true }).click()
     await eventually(() => assert.equal(edits.length, 2))
@@ -123,10 +124,12 @@ async function main() {
     clips[0].caption_style = 'narrow'
     clips[0].burn_captions = true
     await page.reload()
+    await page.locator('summary', { hasText: 'Advanced / legacy caption layout' }).click()
     await slider('Caption horizontal position').waitFor()
     edits.length = 0
 
-    await slider('Caption horizontal position').fill('61')
+    await slider('Caption horizontal position').focus()
+    for (let i = 0; i < 18; i++) await page.keyboard.press('ArrowRight')
     const draftOverlayX = await caption.evaluate(el => {
       const r = el.parentElement.getBoundingClientRect(), p = el.closest('.relative.w-full.overflow-hidden').getBoundingClientRect()
       return (r.left + r.width / 2 - p.left) / p.width
@@ -152,7 +155,8 @@ async function main() {
     assert.equal(await slider('Caption size').inputValue(), '6.2')
     assert.equal(edits.length, 0, 'discard sends no PATCH')
 
-    await slider('Caption horizontal position').fill('61')
+    await slider('Caption horizontal position').focus()
+    for (let i = 0; i < 18; i++) await page.keyboard.press('ArrowRight')
     failNextEdit = true
     await button('Apply caption layout').click()
     await page.getByText('Fixture save failure', { exact: true }).waitFor()
@@ -181,13 +185,15 @@ async function main() {
     assert.equal(await slider('Caption size').inputValue(), '3.4', 'clean layout follows changed preset')
     assert.equal(await page.getByRole('status').filter({ hasText: 'Unsaved caption layout' }).count(), 0)
     await page.reload()
+    await page.locator('summary', { hasText: 'Advanced / legacy caption layout' }).click()
     await slider('Caption size').waitFor()
     assert.equal(await slider('Caption size').inputValue(), '3.4', 'reset and style persist after reload')
 
+    const layoutEdits = edits.filter(e => !('caption_style' in e.patch))
     const overflow = await page.evaluate(() => ({ width: document.documentElement.scrollWidth, viewport: innerWidth }))
     assert.ok(overflow.width <= overflow.viewport, `mobile horizontal overflow: ${JSON.stringify(overflow)}`)
     assert.deepEqual(errors, [])
-    console.log(JSON.stringify({ passed: true, editPatches: edits.length, exportsDuringDraft: exports.length, mobileWidth: overflow.viewport, pageErrors: errors.length }))
+    console.log(JSON.stringify({ passed: true, editPatches: layoutEdits.length, exportsDuringDraft: exports.length, mobileWidth: overflow.viewport, pageErrors: errors.length }))
   } finally {
     if (browser) await browser.close()
     await server.close()
