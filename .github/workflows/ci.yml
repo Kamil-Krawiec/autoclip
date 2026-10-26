@@ -37,7 +37,7 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          for apt_source in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+          for apt_source in /etc/apt/apt-mirrors.txt /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
             if [ -f "$apt_source" ]; then
               sudo sed -i 's/azure[.]archive[.]ubuntu[.]com/archive.ubuntu.com/g' "$apt_source"
             fi
