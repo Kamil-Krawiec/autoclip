@@ -121,6 +121,9 @@ jobs:
         working-directory: frontend
         run: npm run build
 
+      - name: Upload client contract
+        run: node tests/upload_client.cjs
+
   docker:
     name: Docker image
     runs-on: ubuntu-latest
