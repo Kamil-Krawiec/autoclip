@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ..db.models import Clip, ClipEdit, Job, Source
-from .reframe.croppath import CropKeyframe, CropPath, CropSegment, centre_crop
+from .reframe.croppath import CropKeyframe, CropPath, CropSegment, centre_crop, target_crop_size
 
 
 def resolve_crop_path(
@@ -24,6 +24,18 @@ def resolve_crop_path(
                     fit=True,
                 )
             ],
+        )
+    if edit.framing is not None and edit.framing["mode"] == "manual":
+        aspect_w, aspect_h = map(int, edit.ratio.split(":"))
+        base_w, base_h = target_crop_size(width, height, aspect_w, aspect_h)
+        crop_w = max(2, int(base_w / edit.framing["zoom"]) // 2 * 2)
+        crop_h = max(2, int(base_h / edit.framing["zoom"]) // 2 * 2)
+        x = max(0, min(width - crop_w, edit.framing["center_x"] * width - crop_w / 2))
+        y = max(0, min(height - crop_h, edit.framing["center_y"] * height - crop_h / 2))
+        return CropPath(
+            width,
+            height,
+            [CropSegment(0, clip.duration_s, crop_w, crop_h, [CropKeyframe(0, x, y)])],
         )
     original_ratio = job.settings.get("export", {}).get("ratio", "9:16")
     # shortcut: trimmed clips lose tracking; rebase only once original crop-time provenance exists.

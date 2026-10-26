@@ -416,10 +416,8 @@ def _frame_signature(video: Path, timestamp: float) -> str:
     return result.stdout.strip()
 
 
-def test_resolved_fit_off_preserves_corners_audio_and_duration(tmp_path):
-    from autoclip.db.models import Clip, ClipEdit, Job, Source
-    from autoclip.pipeline.framing import resolve_crop_path
-
+@pytest.fixture
+def corner_video(tmp_path):
     source_path = tmp_path / "corners.mp4"
     subprocess.run(
         [
@@ -450,6 +448,14 @@ def test_resolved_fit_off_preserves_corners_audio_and_duration(tmp_path):
         check=True,
         capture_output=True,
     )
+    return source_path
+
+
+def test_resolved_fit_off_preserves_corners_audio_and_duration(tmp_path, corner_video):
+    from autoclip.db.models import Clip, ClipEdit, Job, Source
+    from autoclip.pipeline.framing import resolve_crop_path
+
+    source_path = corner_video
     source = Source(id="s", type="upload", path=str(source_path), width=1280, height=720)
     clip = Clip(id="c", job_id="j", start_s=0, end_s=1)
     edit = ClipEdit(clip_id="c", burn_captions=False, framing={"mode": "fit"})
@@ -504,3 +510,59 @@ def test_resolved_fit_off_preserves_corners_audio_and_duration(tmp_path):
     assert blue[2] > 150 and blue[0] < 50 and blue[1] < 50
     assert yellow[0] > 150 and yellow[1] > 150 and yellow[2] < 50
     assert not list((tmp_path / "work").rglob("*.ass"))
+
+
+def test_manual_export_selects_left_and_right_colored_regions(tmp_path, corner_video):
+    from autoclip.db.models import Clip, ClipEdit, Job, Source
+    from autoclip.pipeline.framing import resolve_crop_path
+
+    source = Source(id="s", type="upload", path=str(corner_video), width=1280, height=720)
+    clip = Clip(id="c", job_id="j", start_s=0, end_s=1)
+    samples = []
+    for center in (0, 1):
+        edit = ClipEdit(
+            clip_id="c", framing={"mode": "manual", "center_x": center, "center_y": 0, "zoom": 4}
+        )
+        path = resolve_crop_path(source, clip, Job(id="j", source_id="s"), edit, None)
+        destination = tmp_path / f"manual-{center}.mp4"
+        request = export.ExportRequest(
+            source=corner_video,
+            destination=destination,
+            start_s=0,
+            end_s=1,
+            crop_path=path,
+            words=[],
+            style=captions.get_style("bold_pop"),
+            burn_captions=False,
+        )
+        export.export_clip(
+            request,
+            work_dir=tmp_path / f"work-{center}",
+            settings=ExportSettings(prefer_hardware_encoder=False),
+        )
+        info = ffmpeg.probe(destination)
+        assert (info.width, info.height) == (1080, 1920)
+        assert info.has_audio and info.duration_s == pytest.approx(1, abs=0.15)
+        frame = subprocess.run(
+            [
+                ffmpeg.ffmpeg_path(),
+                "-v",
+                "error",
+                "-i",
+                str(destination),
+                "-frames:v",
+                "1",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "rgb24",
+                "-",
+            ],
+            check=True,
+            capture_output=True,
+        ).stdout
+        offset = (108 * 1080 + 540) * 3
+        samples.append(tuple(frame[offset : offset + 3]))
+    red, green = samples
+    assert red[0] > 150 and red[1] < 50 and red[2] < 50
+    assert green[1] > 70 and green[0] < 50 and green[2] < 50

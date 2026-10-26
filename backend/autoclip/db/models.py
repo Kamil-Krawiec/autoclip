@@ -166,8 +166,18 @@ class Clip:
         )
 
 
-class Framing(TypedDict):
+class FitFraming(TypedDict):
     mode: Literal["fit"]
+
+
+class ManualFraming(TypedDict):
+    mode: Literal["manual"]
+    center_x: float
+    center_y: float
+    zoom: float
+
+
+Framing = FitFraming | ManualFraming
 
 
 @dataclass
