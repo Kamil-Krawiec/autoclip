@@ -13,13 +13,17 @@ import {
   type CropPath,
   type Job,
   type ManualFraming,
+  type SingleFraming,
+  type SlicesFraming,
   type Word,
 } from '../api'
 import { CaptionEditor } from '../components/CaptionEditor'
 import { CaptionLayoutEditor } from '../components/CaptionLayoutEditor'
 import { ClipPlayer } from '../components/ClipPlayer'
 import { ErrorNote } from '../components/ErrorNote'
+import { ExactPreview } from '../components/ExactPreview'
 import { FramingEditor } from '../components/FramingEditor'
+import { SliceFramingEditor } from '../components/SliceFramingEditor'
 import { TrimBar } from '../components/TrimBar'
 
 const RATIOS = ['9:16', '1:1', '16:9'] as const
@@ -33,6 +37,10 @@ function canonicalCaptionOverridesKey(overrides: CaptionOverrides | null | undef
   })
 }
 
+function canonicalFramingKey(framing: ClipFraming | undefined): string {
+  return JSON.stringify(framing ?? null)
+}
+
 export function Review() {
   const { jobId } = useParams()
   const [job, setJob] = useState<Job | null>(null)
@@ -41,10 +49,12 @@ export function Review() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [words, setWords] = useState<Word[]>([])
   const [cropPath, setCropPath] = useState<CropPath | null>(null)
+  const [playheadSourceS, setPlayheadSourceS] = useState<number>(0)
   const [wordsDirty, setWordsDirty] = useState(false)
   const [framingDirty, setFramingDirty] = useState(false)
   const [captionLayoutDirty, setCaptionLayoutDirty] = useState(false)
   const [savingWords, setSavingWords] = useState(false)
+  const [wordsRevision, setWordsRevision] = useState(0)
   const [savingSettings, setSavingSettings] = useState(false)
   const [trimming, setTrimming] = useState(false)
   const [dirtyBlockedMessage, setDirtyBlockedMessage] = useState<string | null>(null)
@@ -75,12 +85,9 @@ export function Review() {
   const selectedClipId = selected?.id ?? null
   const selectedRatio = selected?.ratio ?? null
   const selectedFraming = selected?.framing ?? null
-  const selectedFramingMode = selected?.framing?.mode ?? null
-  const selectedManualFraming =
-    selectedFraming?.mode === 'manual' ? selectedFraming : null
-  const selectedCenterX = selectedManualFraming?.center_x ?? null
-  const selectedCenterY = selectedManualFraming?.center_y ?? null
-  const selectedZoom = selectedManualFraming?.zoom ?? null
+  const selectedFramingKey = canonicalFramingKey(selectedFraming)
+  const selectedManualFraming = selectedFraming?.mode === 'manual' ? selectedFraming : null
+  const selectedSlicesFraming = selectedFraming?.mode === 'slices' ? selectedFraming : null
   const selectedStartS = selected?.start_s ?? null
   const selectedEndS = selected?.end_s ?? null
 
@@ -95,6 +102,7 @@ export function Review() {
     setCaptionLayoutDirty(false)
     setDirtyBlockedMessage(null)
     setWords([])
+    if (selectedStartS !== null) setPlayheadSourceS(selectedStartS)
     api
       .getClipWords(selectedClipId)
       .then((nextWords) => {
@@ -139,10 +147,7 @@ export function Review() {
   }, [
     selectedClipId,
     selectedRatio,
-    selectedFramingMode,
-    selectedCenterX,
-    selectedCenterY,
-    selectedZoom,
+    selectedFramingKey,
     selectedStartS,
     selectedEndS,
   ])
@@ -223,6 +228,7 @@ export function Review() {
       if (selectedIdRef.current === clipId) {
         setWordsDirty(false)
         setDirtyBlockedMessage(null)
+        setWordsRevision((rev) => rev + 1)
       }
     } catch (err) {
       setError(err as Error)
@@ -264,6 +270,37 @@ export function Review() {
   const setFraming = async (clip: Clip, framing: ClipFraming): Promise<boolean> => {
     if (guardDirtyCaptions('changing framing mode')) return false
     return updateClipEdit(clip, { framing })
+  }
+
+  const commitSlicesFraming = async (clip: Clip, nextSlices: SlicesFraming): Promise<boolean> => {
+    if (guardCaptionLayoutDraft('saving slice framing')) return false
+    if (wordsDirty) {
+      setDirtyBlockedMessage('Save caption changes before saving slice framing.')
+      return false
+    }
+    return updateClipEdit(clip, { framing: nextSlices })
+  }
+
+  const enableSlicesFraming = async (clip: Clip): Promise<boolean> => {
+    if (guardDirtyCaptions('enabling per-slice framing')) return false
+    if (clip.framing?.mode === 'slices') return true
+    let initialFraming: SingleFraming = { mode: 'auto' }
+    if (clip.framing?.mode === 'fit') {
+      initialFraming = { mode: 'fit' }
+    } else if (clip.framing?.mode === 'manual') {
+      initialFraming = { ...clip.framing }
+    }
+    const payload: SlicesFraming = {
+      mode: 'slices',
+      segments: [
+        {
+          start_s: clip.start_s,
+          end_s: clip.end_s,
+          framing: initialFraming,
+        },
+      ],
+    }
+    return updateClipEdit(clip, { framing: payload })
   }
 
   const setCaptionOverrides = async (
@@ -308,6 +345,24 @@ export function Review() {
         (cropPath && cropPath.source_width > 0 && cropPath.source_height > 0)),
   )
   const defaultManualFraming: ManualFraming = { mode: 'manual', center_x: 0.5, center_y: 0.5, zoom: 1 }
+  const savedPreviewSignature = selected
+    ? JSON.stringify({
+        id: selected.id,
+        start_s: selected.start_s,
+        end_s: selected.end_s,
+        ratio: selected.ratio,
+        caption_style: selected.caption_style,
+        burn_captions: selected.burn_captions ?? true,
+        caption_overrides: canonicalCaptionOverridesKey(selected.caption_overrides),
+        framing: selectedFramingKey,
+        wordsRevision,
+      })
+    : ''
+  const hasUnsavedDrafts = wordsDirty || framingDirty || captionLayoutDirty
+  const previewDisabled = controlsLocked || hasUnsavedDrafts
+  const previewDisabledReason = hasUnsavedDrafts
+    ? 'Save or discard unsaved caption, layout, or framing changes before rendering an exact preview.'
+    : null
 
   if (error && clips.length === 0) {
     return (
@@ -412,6 +467,7 @@ export function Review() {
                   cropPath={cropPath}
                   burnCaptions={burnCaptions}
                   captionOverrides={selected.caption_overrides}
+                  onPlayheadChange={setPlayheadSourceS}
                 />
                 {selectedManualFraming && (
                   <FramingEditor
@@ -429,6 +485,30 @@ export function Review() {
                     onCommit={(nextFraming) => updateClipEdit(selected, { framing: nextFraming })}
                   />
                 )}
+                {selectedSlicesFraming && (
+                  <SliceFramingEditor
+                    src={api.mediaUrl(jobId)}
+                    clipId={selected.id}
+                    clipStartS={selected.start_s}
+                    clipEndS={selected.end_s}
+                    ratio={selected.ratio}
+                    slicesFraming={selectedSlicesFraming}
+                    cropPath={cropPath}
+                    sourceWidth={job.source?.width ?? cropPath?.source_width ?? 0}
+                    sourceHeight={job.source?.height ?? cropPath?.source_height ?? 0}
+                    hasVideoSource={hasVideoSource}
+                    playheadSourceS={playheadSourceS}
+                    disabled={controlsLocked || captionLayoutDirty || wordsDirty}
+                    framingDirty={framingDirty}
+                    onDirtyChange={(dirty) => {
+                      if (selectedIdRef.current !== selected.id) return
+                      setFramingDirty(dirty)
+                      if (!dirty) setDirtyBlockedMessage(null)
+                    }}
+                    onCommitSlices={(nextSlices) => commitSlicesFraming(selected, nextSlices)}
+                    onResetToGlobalAuto={() => setFraming(selected, null)}
+                  />
+                )}
                 <TrimBar
                   words={words}
                   startS={selected.start_s}
@@ -437,6 +517,13 @@ export function Review() {
                   originalEnd={selected.end_s}
                   onCommit={commitTrim}
                   disabled={controlsLocked || wordsDirty || framingDirty || captionLayoutDirty}
+                />
+                <ExactPreview
+                  clip={selected}
+                  playheadSourceS={playheadSourceS}
+                  signature={savedPreviewSignature}
+                  disabled={previewDisabled}
+                  disabledReason={previewDisabledReason}
                 />
               </>
             )}
@@ -597,7 +684,23 @@ export function Review() {
                     >
                       Manual
                     </button>
+                    <button
+                      type="button"
+                      disabled={controlsLocked}
+                      onClick={() => void enableSlicesFraming(selected)}
+                      className={[
+                        'btn',
+                        framingMode === 'slices' ? 'btn-primary' : 'btn-ghost',
+                      ].join(' ')}
+                    >
+                      Per-slice framing
+                    </button>
                   </div>
+                  {framingMode === 'slices' && (
+                    <p className="mt-2 text-xs text-ink-400">
+                      Per-slice framing is active. Choosing Auto, Fit, or Manual above replaces all slices for this clip.
+                    </p>
+                  )}
                 </div>
 
                 <div className="border-t border-ink-800 pt-6">

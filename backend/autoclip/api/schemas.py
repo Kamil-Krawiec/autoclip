@@ -10,9 +10,10 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..db import models
+from ..pipeline.framing import MAX_FRAMING_SLICES, SLICE_CONTIGUITY_TOLERANCE_S
 
 
 class SourceOut(BaseModel):
@@ -169,7 +170,41 @@ class ManualFramingIn(BaseModel):
     zoom: float = Field(ge=1, le=4, allow_inf_nan=False, strict=True)
 
 
-FramingIn = Annotated[AutoFitFramingIn | ManualFramingIn, Field(discriminator="mode")]
+LeafFramingIn = Annotated[AutoFitFramingIn | ManualFramingIn, Field(discriminator="mode")]
+
+
+class SliceSegmentIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    start_s: float = Field(ge=0, allow_inf_nan=False, strict=True)
+    end_s: float = Field(gt=0, allow_inf_nan=False, strict=True)
+    framing: LeafFramingIn
+
+    @model_validator(mode="after")
+    def _check_positive_duration(self) -> SliceSegmentIn:
+        if self.end_s <= self.start_s:
+            raise ValueError("Slice end_s must be greater than start_s.")
+        return self
+
+
+class SlicesFramingIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["slices"]
+    segments: list[SliceSegmentIn] = Field(min_length=1, max_length=MAX_FRAMING_SLICES)
+
+    @model_validator(mode="after")
+    def _check_contiguous_sorted(self) -> SlicesFramingIn:
+        for prev, curr in zip(self.segments, self.segments[1:], strict=False):
+            if curr.start_s < prev.start_s:
+                raise ValueError("Slice segments must be sorted by start_s.")
+            if abs(curr.start_s - prev.end_s) > SLICE_CONTIGUITY_TOLERANCE_S:
+                raise ValueError("Slice segments must be contiguous without gaps or overlaps.")
+        return self
+
+
+FramingIn = Annotated[
+    AutoFitFramingIn | ManualFramingIn | SlicesFramingIn,
+    Field(discriminator="mode"),
+]
 
 
 class ClipOut(BaseModel):
@@ -265,6 +300,12 @@ class ExportRequestIn(BaseModel):
     ratio: Literal["9:16", "1:1", "16:9"] | None = None
     style: str | None = None
     write_srt: bool = False
+
+
+class PreviewRequestIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    start_s: float = Field(default=0.0, ge=0, allow_inf_nan=False, strict=True)
+    duration_s: float = Field(default=3.0, gt=0, le=5.0, allow_inf_nan=False, strict=True)
 
 
 class CaptionStyleOut(BaseModel):

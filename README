@@ -187,6 +187,17 @@ Choose **Manual** to move the crop over the full source image and zoom from
 The draft rectangle is approximate until applied; the main player shows the
 saved crop used for export. **Discard framing changes** restores saved values.
 
+Choose **Per-slice framing** to use different crops within one clip. Pause at a
+cut, choose **Split slice at playhead**, select a slice, then choose its Auto,
+Fit or Manual framing. **Merge with next slice** keeps the selected slice's
+framing. Cuts stay anchored to the source when trimming and expanding again.
+Choosing a global framing mode replaces the slices.
+
+**Render exact preview** renders up to three seconds from the playhead using the
+saved FFmpeg/ASS settings. Save or discard drafts first. This preview has the
+export's framing and caption rendering; it does not add an export to history.
+Only one preview renders at a time, with a two-minute timeout.
+
 | style | look |
 |---|---|
 | `karaoke_lower` | word-timed green karaoke near the bottom |
