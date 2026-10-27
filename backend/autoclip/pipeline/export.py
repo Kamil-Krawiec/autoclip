@@ -56,6 +56,8 @@ class ExportRequest:
     style: CaptionStyle
     ratio: str = "9:16"
     burn_captions: bool = True
+    output_start_s: float | None = None
+    output_duration_s: float | None = None
 
     @property
     def duration_s(self) -> float:
@@ -133,12 +135,21 @@ def build_video_filtergraph(
         parts.append(f"{''.join(labels)}concat=n={len(segments)}:v=1:a=0[vcat]")
         current = "[vcat]"
 
+    post_ass_trim = request.output_start_s is not None or request.output_duration_s is not None
+    ass_out = "[vass]" if post_ass_trim else "[vout]"
+
     if request.burn_captions and subtitle_name is not None:
         # Bare relative names — ffmpeg runs with its cwd set to the render
         # workspace, so there is nothing here that needs escaping.
-        parts.append(f"{current}ass=filename={subtitle_name}:fontsdir={fonts_name}[vout]")
-    else:
+        parts.append(f"{current}ass=filename={subtitle_name}:fontsdir={fonts_name}{ass_out}")
+    elif not post_ass_trim:
         parts.append(f"{current}null[vout]")
+    else:
+        ass_out = current
+
+    if post_ass_trim:
+        start_s, end_s = _output_window(request)
+        parts.append(f"{ass_out}trim=start={start_s:.4f}:end={end_s:.4f},setpts=PTS-STARTPTS[vout]")
 
     return ";".join(parts)
 
@@ -175,8 +186,21 @@ def _zoom_filter(zoom: float, out_w: int, out_h: int) -> str:
     return f"zoompan=z='min(zoom+{zoom / 240:.6f},{end_zoom:.4f})':d=1:s={out_w}x{out_h}:fps=30"
 
 
-def build_audio_filtergraph(settings: ExportSettings) -> str:
-    return f"loudnorm=I={settings.loudness_lufs}:TP={LOUDNESS_TRUE_PEAK}:LRA={LOUDNESS_RANGE}"
+def _output_window(request: ExportRequest) -> tuple[float, float]:
+    start_s = max(0.0, float(request.output_start_s or 0.0))
+    if request.output_duration_s is not None:
+        end_s = min(request.duration_s, start_s + max(0.0, float(request.output_duration_s)))
+    else:
+        end_s = request.duration_s
+    return start_s, max(start_s, end_s)
+
+
+def build_audio_filtergraph(settings: ExportSettings, request: ExportRequest | None = None) -> str:
+    base = f"loudnorm=I={settings.loudness_lufs}:TP={LOUDNESS_TRUE_PEAK}:LRA={LOUDNESS_RANGE}"
+    if request is None or (request.output_start_s is None and request.output_duration_s is None):
+        return base
+    start_s, end_s = _output_window(request)
+    return f"{base},atrim=start={start_s:.4f}:end={end_s:.4f},asetpts=PTS-STARTPTS"
 
 
 def encoder_args(settings: ExportSettings) -> list[str]:
@@ -263,6 +287,11 @@ def export_clip(
 
     request.destination.parent.mkdir(parents=True, exist_ok=True)
 
+    expected_duration_s = request.duration_s
+    if request.output_start_s is not None or request.output_duration_s is not None:
+        out_start_s, out_end_s = _output_window(request)
+        expected_duration_s = max(0.001, out_end_s - out_start_s)
+
     # Input and output paths are ordinary argv arguments, so they stay absolute
     # and need no escaping regardless of the working directory.
     args = [
@@ -281,7 +310,7 @@ def export_clip(
         "-map",
         "0:a?",
         "-af",
-        build_audio_filtergraph(settings),
+        build_audio_filtergraph(settings, request),
         *encoder_args(settings),
         "-pix_fmt",
         "yuv420p",
@@ -299,7 +328,7 @@ def export_clip(
     try:
         ffmpeg.run(
             args,
-            total_duration_s=request.duration_s,
+            total_duration_s=expected_duration_s,
             on_progress=on_progress,
             cancelled=cancelled,
             cwd=render_cwd,
@@ -310,7 +339,12 @@ def export_clip(
     if not request.destination.exists() or request.destination.stat().st_size == 0:
         raise ExportError(f"ffmpeg reported success but {request.destination.name} is empty.")
 
-    if settings.write_srt and request.words:
+    if (
+        settings.write_srt
+        and request.words
+        and request.output_start_s is None
+        and request.output_duration_s is None
+    ):
         captions_module.write_srt(
             request.destination.with_suffix(".srt"),
             request.words,
@@ -320,7 +354,7 @@ def export_clip(
     log.info(
         "Exported %s (%.1fs, %s)",
         request.destination.name,
-        request.duration_s,
+        expected_duration_s,
         request.ratio,
     )
     return request.destination

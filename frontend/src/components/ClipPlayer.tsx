@@ -44,6 +44,7 @@ export function ClipPlayer({
   cropPath,
   burnCaptions = true,
   captionOverrides,
+  onPlayheadChange,
 }: {
   src: string
   startS: number
@@ -54,6 +55,7 @@ export function ClipPlayer({
   cropPath?: CropPath | null
   burnCaptions?: boolean
   captionOverrides?: CaptionOverrides | null
+  onPlayheadChange?: (sourceTimeS: number) => void
 }) {
   const video = useRef<HTMLVideoElement>(null)
   const bgVideo = useRef<HTMLVideoElement>(null)
@@ -64,6 +66,13 @@ export function ClipPlayer({
   const [nativeControls, setNativeControls] = useState(false)
   const [audioCheck, setAudioCheck] = useState<AudioCheck | null>(null)
   const [checking, setChecking] = useState(false)
+  const onPlayheadChangeRef = useRef(onPlayheadChange)
+  onPlayheadChangeRef.current = onPlayheadChange
+
+  const updateTime = useCallback((nextTime: number) => {
+    setTime(nextTime)
+    onPlayheadChangeRef.current?.(nextTime)
+  }, [])
 
   const runAudioCheck = async () => {
     const element = video.current
@@ -123,10 +132,10 @@ export function ClipPlayer({
       bgVideo.current.pause()
       bgVideo.current.currentTime = startS
     }
-    setTime(startS)
+    updateTime(startS)
     setPlaying(false)
     element.pause()
-  }, [src, startS])
+  }, [src, startS, updateTime])
 
   useEffect(() => {
     const fg = video.current
@@ -148,12 +157,12 @@ export function ClipPlayer({
         bgVideo.current.currentTime = startS
       }
       setPlaying(false)
-      setTime(startS)
+      updateTime(startS)
       return
     }
-    setTime(element.currentTime)
+    updateTime(element.currentTime)
     syncBackground(false)
-  }, [endS, startS, syncBackground])
+  }, [endS, startS, syncBackground, updateTime])
 
   const toggle = () => {
     const element = video.current
@@ -161,6 +170,7 @@ export function ClipPlayer({
     if (element.paused) {
       if (element.currentTime < startS || element.currentTime >= endS) {
         element.currentTime = startS
+        updateTime(startS)
         if (bgVideo.current) {
           bgVideo.current.currentTime = startS
         }
@@ -250,7 +260,10 @@ export function ClipPlayer({
             setPlaying(false)
             bgVideo.current?.pause()
           }}
-          onSeeked={() => syncBackground(true)}
+          onSeeked={() => {
+            if (video.current) updateTime(video.current.currentTime)
+            syncBackground(true)
+          }}
           onRateChange={() => syncBackground(false)}
           preload="auto"
           playsInline

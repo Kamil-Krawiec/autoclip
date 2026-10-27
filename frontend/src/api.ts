@@ -65,6 +65,10 @@ export interface ExportRecord {
 
 export type ClipStatus = 'candidate' | 'kept' | 'discarded' | 'exported'
 
+export interface AutoFraming {
+  mode: 'auto'
+}
+
 export interface Framing {
   mode: 'fit'
 }
@@ -76,7 +80,20 @@ export interface ManualFraming {
   zoom: number
 }
 
-export type ClipFraming = Framing | ManualFraming | null
+export type SingleFraming = AutoFraming | Framing | ManualFraming
+
+export interface FramingSlice {
+  start_s: number
+  end_s: number
+  framing: SingleFraming
+}
+
+export interface SlicesFraming {
+  mode: 'slices'
+  segments: FramingSlice[]
+}
+
+export type ClipFraming = AutoFraming | Framing | ManualFraming | SlicesFraming | null
 
 export interface CaptionOverrides {
   size_ratio?: number
@@ -114,6 +131,11 @@ export interface ClipEditPatch {
   burn_captions?: boolean
   framing?: ClipFraming
   caption_overrides?: CaptionOverrides | null
+}
+
+export interface ClipPreviewRequest {
+  start_s?: number
+  duration_s?: number
 }
 
 export interface Word {
@@ -469,6 +491,24 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(patch),
     }),
+
+  previewClip: async (
+    clipId: string,
+    params: ClipPreviewRequest = {},
+    signal?: AbortSignal,
+  ): Promise<Blob> => {
+    const response = await fetch(`/api/clips/${clipId}/preview`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ start_s: params.start_s ?? 0, duration_s: params.duration_s ?? 3 }),
+      signal,
+    })
+    if (!response.ok) {
+      const rawText = await response.text().catch(() => '')
+      throw parseErrorBody(response.status, response.statusText, rawText)
+    }
+    return response.blob()
+  },
 
   exportClip: (
     clipId: string,

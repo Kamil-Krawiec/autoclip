@@ -572,10 +572,17 @@ class TestClips:
         ],
     )
     def test_export_uses_saved_state_and_unique_files(
-        self, client, job_with_clips, monkeypatch, framing
+        self, client, job_with_clips, monkeypatch, framing, tmp_path
     ):
+        from autoclip import db
         from autoclip.pipeline import export
 
+        media = tmp_path / "source.mp4"
+        media.write_bytes(b"synthetic source for mocked renderer")
+        with db.connection() as conn:
+            conn.execute(
+                "UPDATE sources SET path=? WHERE id=?", (str(media), job_with_clips.source_id)
+            )
         clip = store.list_clips(job_with_clips.id)[0]
         url = f"/api/clips/{clip.id}"
         assert (

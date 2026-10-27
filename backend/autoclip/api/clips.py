@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
+import tempfile
+import threading
 from dataclasses import replace
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 
 from .. import library as media_library
 from .. import paths
@@ -17,7 +21,7 @@ from ..db import store
 from ..db.models import ClipEdit, Export, new_id
 from ..pipeline import captions as captions_module
 from ..pipeline import export as export_module
-from ..pipeline.framing import resolve_crop_path
+from ..pipeline.framing import resolve_crop_path, validate_framing_bounds
 from ..pipeline.reframe.croppath import CropPath
 from ..pipeline.runner import JobWorkspace
 from ..pipeline.transcript import Transcript, Word
@@ -29,12 +33,27 @@ from .schemas import (
     EditPatchIn,
     ExportOut,
     ExportRequestIn,
+    PreviewRequestIn,
     WordOut,
 )
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["clips"])
+_PREVIEW_LOCK = threading.Lock()
+_PREVIEW_ROUND_EPSILON = 1e-6
+_PREVIEW_TIMEOUT_S = 120.0
+
+
+class _PreviewFileResponse(FileResponse):
+    async def __call__(self, scope, receive, send) -> None:
+        background = self.background
+        self.background = None
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            if background is not None:
+                await background()
 
 
 def _clip_out(clip) -> ClipOut:
@@ -170,7 +189,18 @@ async def _save_edit(clip, payload: CaptionPatchIn) -> ClipOut:
             captions_module.get_style(payload.caption_style)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     changes = payload.model_dump(exclude_unset=True)
+    if "framing" in changes and changes["framing"] is not None:
+        job = await asyncio.to_thread(store.get_job, clip.job_id)
+        source = await asyncio.to_thread(store.get_source, job.source_id) if job else None
+        if job is None or source is None:
+            raise HTTPException(status_code=404, detail="The clip's source is missing.")
+        try:
+            validate_framing_bounds(changes["framing"], source.duration_s)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     if "caption_overrides" in changes and changes["caption_overrides"] is not None:
         raw_overrides = changes["caption_overrides"]
         normalized = {key: value for key, value in raw_overrides.items() if value is not None}
@@ -188,9 +218,22 @@ async def _save_edit(clip, payload: CaptionPatchIn) -> ClipOut:
     return await asyncio.to_thread(_clip_out, clip)
 
 
-@router.post("/clips/{clip_id}/export", response_model=ExportOut, status_code=201)
-async def export_clip(clip_id: str, payload: ExportRequestIn) -> ExportOut:
-    """Render one clip and return its download link."""
+def _resolve_existing_source_path(source) -> Path:
+    source_path = media_library.media_path(source)
+    if not source_path.is_file():
+        raise media_library.LibraryError("Source media file is missing.")
+    return source_path
+
+
+async def _prepare_saved_render(
+    clip_id: str,
+    *,
+    ratio_override: str | None = None,
+    style_override: str | None = None,
+    destination: Path,
+    output_start_s: float | None = None,
+    output_duration_s: float | None = None,
+):
     clip = await asyncio.to_thread(store.get_clip, clip_id)
     if clip is None:
         raise HTTPException(status_code=404, detail="Clip not found.")
@@ -201,10 +244,10 @@ async def export_clip(clip_id: str, payload: ExportRequestIn) -> ExportOut:
         raise HTTPException(status_code=404, detail="The clip's source is missing.")
 
     edit = await asyncio.to_thread(store.get_clip_edit, clip_id) or ClipEdit(clip_id=clip_id)
-    ratio = payload.ratio or edit.ratio
+    ratio = ratio_override or edit.ratio
     try:
         style = captions_module.resolve_style(
-            payload.style if payload.style is not None else edit.caption_style,
+            style_override if style_override is not None else edit.caption_style,
             edit.caption_overrides,
         )
     except ValueError as exc:
@@ -215,26 +258,15 @@ async def export_clip(clip_id: str, payload: ExportRequestIn) -> ExportOut:
         for w in await clip_words(clip_id)
     ]
 
-    settings = load_settings()
-    settings.export.write_srt = payload.write_srt
-
     workspace = JobWorkspace(clip.job_id)
     crop_path = await asyncio.to_thread(
         _crop_path_for, workspace, clip, source, job, replace(edit, ratio=ratio)
     )
-    export_id = new_id()
-
-    destination = (
-        paths.exports_dir()
-        / clip.job_id
-        / export_id
-        / export_module.output_filename(clip.title or f"clip-{clip.rank}", ratio)
-    )
-
     try:
-        source_path = await asyncio.to_thread(media_library.media_path, source)
+        source_path = await asyncio.to_thread(_resolve_existing_source_path, source)
     except media_library.LibraryError as exc:
         raise HTTPException(status_code=410, detail="Source media is unavailable.") from exc
+
     request = export_module.ExportRequest(
         source=source_path,
         destination=destination,
@@ -245,7 +277,32 @@ async def export_clip(clip_id: str, payload: ExportRequestIn) -> ExportOut:
         style=style,
         ratio=ratio,
         burn_captions=edit.burn_captions,
+        output_start_s=output_start_s,
+        output_duration_s=output_duration_s,
     )
+    return clip, workspace, ratio, style, request
+
+
+@router.post("/clips/{clip_id}/export", response_model=ExportOut, status_code=201)
+async def export_clip(clip_id: str, payload: ExportRequestIn) -> ExportOut:
+    """Render one clip and return its download link."""
+    export_id = new_id()
+    clip, workspace, ratio, style, request = await _prepare_saved_render(
+        clip_id,
+        ratio_override=payload.ratio,
+        style_override=payload.style,
+        destination=paths.exports_dir() / export_id / "placeholder.mp4",
+    )
+    destination = (
+        paths.exports_dir()
+        / clip.job_id
+        / export_id
+        / export_module.output_filename(clip.title or f"clip-{clip.rank}", ratio)
+    )
+    request = replace(request, destination=destination)
+
+    settings = load_settings()
+    settings.export.write_srt = payload.write_srt
 
     try:
         await asyncio.to_thread(
@@ -269,6 +326,97 @@ async def export_clip(clip_id: str, payload: ExportRequestIn) -> ExportOut:
     await asyncio.to_thread(store.update_clip, clip_id, status="exported")
 
     return ExportOut.of(record)
+
+
+async def _await_render_task_uninterruptibly(task: asyncio.Task[Path]) -> None:
+    while True:
+        try:
+            await asyncio.shield(task)
+            break
+        except asyncio.CancelledError:
+            if task.done():
+                break
+            continue
+        except BaseException:
+            break
+
+
+@router.post("/clips/{clip_id}/preview")
+async def preview_clip(clip_id: str, payload: PreviewRequestIn | None = None) -> FileResponse:
+    """Render a short exact-preview MP4 slice from the clip's saved state."""
+    params = payload or PreviewRequestIn()
+    clip = await asyncio.to_thread(store.get_clip, clip_id)
+    if clip is None:
+        raise HTTPException(status_code=404, detail="Clip not found.")
+    if params.start_s >= clip.duration_s - _PREVIEW_ROUND_EPSILON:
+        raise HTTPException(status_code=400, detail="Preview start is outside the clip.")
+
+    clamped_duration = min(params.duration_s, max(0.0, clip.duration_s - params.start_s))
+    if clamped_duration <= 0:
+        raise HTTPException(status_code=400, detail="Preview start is outside the clip.")
+
+    if not _PREVIEW_LOCK.acquire(blocking=False):
+        raise HTTPException(
+            status_code=409, detail="Another preview render is already in progress."
+        )
+
+    temp_dir: Path | None = None
+    cancel_event = threading.Event()
+    render_task: asyncio.Task[Path] | None = None
+    handed_off = False
+    try:
+        base_tmp = paths.exports_dir() / "_previews"
+        base_tmp.mkdir(parents=True, exist_ok=True)
+        temp_dir = Path(tempfile.mkdtemp(prefix=f"preview-{clip_id}-", dir=base_tmp))
+        destination = temp_dir / "preview.mp4"
+
+        _, _, _, _, request = await _prepare_saved_render(
+            clip_id,
+            destination=destination,
+            output_start_s=params.start_s,
+            output_duration_s=clamped_duration,
+        )
+        settings = load_settings()
+        settings.export.write_srt = False
+
+        render_task = asyncio.create_task(
+            asyncio.to_thread(
+                export_module.export_clip,
+                request,
+                work_dir=temp_dir / "work",
+                settings=settings.export,
+                cancelled=cancel_event.is_set,
+            )
+        )
+        await asyncio.wait_for(asyncio.shield(render_task), timeout=_PREVIEW_TIMEOUT_S)
+    except TimeoutError as exc:
+        cancel_event.set()
+        if render_task is not None:
+            await _await_render_task_uninterruptibly(render_task)
+        raise HTTPException(status_code=504, detail="Preview render timed out.") from exc
+    except asyncio.CancelledError:
+        cancel_event.set()
+        if render_task is not None:
+            await _await_render_task_uninterruptibly(render_task)
+        raise
+    except export_module.ExportError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    else:
+        handed_off = True
+        cleanup_dir = temp_dir
+        return _PreviewFileResponse(
+            destination,
+            media_type="video/mp4",
+            filename="preview.mp4",
+            background=BackgroundTask(shutil.rmtree, cleanup_dir, True),
+        )
+    finally:
+        if render_task is not None and not render_task.done():
+            cancel_event.set()
+            await _await_render_task_uninterruptibly(render_task)
+        if not handed_off and temp_dir is not None:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        _PREVIEW_LOCK.release()
 
 
 @router.get("/exports/{export_id}/download")
