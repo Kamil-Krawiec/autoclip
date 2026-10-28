@@ -117,11 +117,11 @@
 
   /* The masthead label — small, wide-tracked, sits above a rule. */
   .eyebrow {
-    font-size: 0.6875rem;
+    font-size: 0.75rem;
     font-weight: 600;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: var(--color-ink-400);
+    color: var(--color-ink-300);
   }
 
   .rule {
@@ -134,13 +134,13 @@
     background: transparent;
     border: 0;
     border-bottom: 1px solid var(--color-ink-700);
-    padding: 0.625rem 0.125rem;
+    padding: 0.75rem 0.125rem;
     color: var(--color-ink-100);
     width: 100%;
-    transition: border-color 220ms var(--ease-out-quart);
+    transition: border-color 180ms var(--ease-out-quart);
   }
   .field::placeholder {
-    color: var(--color-ink-600);
+    color: var(--color-ink-300);
   }
   .field:focus {
     outline: none;
@@ -153,9 +153,10 @@
     justify-content: center;
     gap: 0.5rem;
     font-weight: 600;
-    font-size: 0.8125rem;
+    min-height: 2.75rem;
+    font-size: 0.875rem;
     letter-spacing: 0.01em;
-    padding: 0.5rem 1rem;
+    padding: 0.625rem 1rem;
     transition:
       background-color 180ms var(--ease-out-quart),
       color 180ms var(--ease-out-quart),
@@ -166,7 +167,7 @@
     transform: translateY(1px);
   }
   .btn:disabled {
-    opacity: 0.4;
+    opacity: 0.6;
     cursor: not-allowed;
   }
 
@@ -190,8 +191,8 @@
 
   .btn-quiet {
     background: transparent;
-    color: var(--color-ink-400);
-    padding-inline: 0.25rem;
+    color: var(--color-ink-300);
+    padding-inline: 0.5rem;
   }
   .btn-quiet:hover:not(:disabled) {
     color: var(--color-sodium-400);
