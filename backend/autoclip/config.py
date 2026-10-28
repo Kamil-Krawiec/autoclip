@@ -238,7 +238,8 @@ def _keyring():
 def get_secret(key: str, settings: Settings | None = None) -> str | None:
     """Return a stored secret, or None if unset.
 
-    ``key`` is a provider name for API keys, or :data:`HF_TOKEN_KEY`.
+    ``key`` is a provider name for API keys, :data:`HF_TOKEN_KEY`, or
+    :data:`OPENAI_IMAGE_KEY` for the separate Images key.
     """
     env_override = os.environ.get(f"AUTOCLIP_{key.upper()}_KEY")
     if env_override:

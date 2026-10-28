@@ -372,7 +372,14 @@ export function PublishDetailPage() {
     setBusy('thumbnail')
     setError(null)
     try {
-      apply(await api.generatePublicationThumbnail(publication.id, prompt.trim() || undefined))
+      // Keep the user's unsaved title/description/tags in the form: only the
+      // thumbnail and its prompt are the server's response here.
+      const next = await api.generatePublicationThumbnail(
+        publication.id,
+        prompt.trim() || undefined,
+      )
+      setPublication(next)
+      setPrompt(next.thumbnail_prompt)
     } catch (err) {
       setError(err as Error)
     } finally {

@@ -417,6 +417,9 @@ def publish_auth(
         except publishing_auth.PublishingAuthError as exc:
             console.print(f"[red]{exc}[/red]")
             raise typer.Exit(1) from exc
+        except Exception as exc:  # noqa: BLE001 - surface the real OAuth failure
+            console.print(f"[red]Could not verify the YouTube token: {exc}[/red]")
+            raise typer.Exit(1) from exc
         console.print(f"[green]{message}[/green]")
         return
 
@@ -437,6 +440,9 @@ def publish_auth(
         written = publishing_auth.authorize(host=host, port=port)
     except publishing_auth.PublishingAuthError as exc:
         console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    except Exception as exc:  # noqa: BLE001 - surface the real OAuth failure
+        console.print(f"[red]Authorization failed: {exc}[/red]")
         raise typer.Exit(1) from exc
 
     console.print(f"[green]YouTube token written to {written}.[/green]")
