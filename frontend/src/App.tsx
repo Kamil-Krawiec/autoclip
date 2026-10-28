@@ -6,7 +6,7 @@ import { api, type SystemStatus } from './api'
 /**
  * Application shell.
  *
- * A masthead rather than a sidebar: this is a four-screen tool, and a
+ * A masthead rather than a sidebar: this is a five-screen tool, and a
  * persistent nav rail would spend a fifth of the width restating that.
  */
 export function App() {
@@ -30,6 +30,7 @@ export function App() {
             <TopLink to="/" end>
               New
             </TopLink>
+            <TopLink to="/publish">Publish</TopLink>
             <TopLink to="/settings">Settings</TopLink>
           </nav>
 

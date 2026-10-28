@@ -8,7 +8,8 @@
 
 Paste a YouTube link or drop a file. AutoClip transcribes it, uses an LLM to find the moments worth clipping, reframes them to vertical while tracking whoever is speaking, burns in animated captions, and exports platform-ready MP4s.
 
-No accounts. No uploads to anyone's servers. No watermarks. No subscription.
+No accounts. No uploads to anyone's servers unless you opt into the YouTube
+**Publish** flow with your own OAuth client. No watermarks. No subscription.
 
 ---
 
@@ -28,6 +29,9 @@ Only transcript *text* is ever sent to a provider — never video or audio. With
 Working end to end: ingest, transcription, highlight detection across four providers, speaker-tracked reframing, four caption styles, export at three aspect ratios, and the full review UI. Verified on real footage — see [what "verified" means](#what-has-and-hasnt-been-verified).
 
 Pre-1.0. The reframe quality bar hasn't been validated against a fixed golden set yet, which is the gate for tagging v0.1.0.
+
+An optional **Publish** flow adds AI title/description, a retryable thumbnail,
+a tcap-compatible still, and direct YouTube upload with your own OAuth client.
 
 ## Requirements
 
@@ -144,6 +148,7 @@ Everything the UI does is also on the CLI:
 | `autoclip jobs` | list recent jobs |
 | `autoclip providers` | check which providers are reachable |
 | `autoclip styles` | list caption presets |
+| `autoclip publish auth` | authorize YouTube uploads (one-time) |
 | `autoclip config show` | print settings |
 | `autoclip update-ytdlp` | update yt-dlp after a YouTube change |
 
@@ -161,6 +166,141 @@ Compose file, place media under `docker/media/`, choose a folder and file, then
 **Process file**. AutoClip validates and uses the original file without copying
 it. Keep it in place for processing, preview and export. Symlinks are excluded;
 uploaded files remain managed copies in `/data`.
+
+### Publish to YouTube
+
+The **Publish** page in the top navigation turns a finished export into a
+YouTube upload. It is opt-in: nothing leaves your machine until you press
+**Publish**. The page lists ready exports (9:16 by default), generates an
+editable Polish title, description and tags from the clip transcript, generates
+a 9:16 thumbnail, and lets you retry the image with a new prompt. The model is
+free to propose the wording and structure; there is no required keyword count
+or hashtag format. On upload, AutoClip appends the still to the end of the MP4
+(the same tcap-compatible step
+used by the standalone pipeline), uploads with the YouTube Data API, and
+best-effort sets the custom thumbnail.
+
+#### Required secrets
+
+| Secret | Where it goes | Used for |
+| --- | --- | --- |
+| OpenAI API key (`sk-...`) | **Settings → Keys → OpenAI**, or `AUTOCLIP_OPENAI_KEY` | metadata generation, default `gpt-6-luna` |
+| OpenAI Images API key (`sk-...`) | **Settings → Keys → OpenAI Images**, or `AUTOCLIP_OPENAI_IMAGE_KEY` | thumbnail generation |
+| YouTube OAuth client JSON | `$AUTOCLIP_HOME/secrets/youtube_client_secret.json` | one-time consent and token refresh |
+| YouTube refresh token JSON | `$AUTOCLIP_HOME/secrets/youtube_token.json` (written by `autoclip publish auth`) | uploads without a browser |
+
+`$AUTOCLIP_HOME` is `~/.autoclip` by default and `/data` in Docker. Both JSON
+files must be readable only by you (`chmod 600` on Linux/macOS; restrict the
+file's ACL on Windows). They are ignored by Git — never commit them.
+
+In Docker, the easiest path for the two OpenAI keys is **Settings → Keys**
+(they persist on `/data`). If you prefer environment variables, put them in an
+untracked `.env` and pass them through `docker/compose.yaml` as
+`AUTOCLIP_OPENAI_KEY` and `AUTOCLIP_OPENAI_IMAGE_KEY`.
+
+Publish metadata defaults to OpenAI **`gpt-6-luna`**. You can switch it to the
+active provider (or another model) in **Settings → Publishing**. The OpenAI
+Images key is separate: thumbnails always use the Images API, so add an image
+key even if clips are selected with Anthropic, Gemini or Ollama. You can paste
+the same `sk-...` value under both keys; the separate name keeps an
+OpenRouter/DeepSeek key from being sent to OpenAI Images. If you switch Publish
+metadata to the active provider, that provider's existing key is used instead.
+
+#### Google Cloud OAuth (once)
+
+1. Create or select a project at <https://console.cloud.google.com/>.
+2. **APIs & Services → Library → YouTube Data API v3 → Enable**.
+3. **OAuth consent screen**: User type **External**, fill in the app name and
+   support email, and add your Google account under **Test users**. In
+   **Testing** mode Google issues refresh tokens that expire after **7 days**;
+   either re-run `autoclip publish auth` weekly or publish the OAuth app.
+4. **Credentials → Create credentials → OAuth client ID → Desktop app**.
+5. Download the JSON and save it as:
+
+   ```bash
+   mkdir -p ~/.autoclip/secrets
+   mv ~/Downloads/client_secret_*.json \
+      ~/.autoclip/secrets/youtube_client_secret.json
+   chmod 600 ~/.autoclip/secrets/youtube_client_secret.json
+   ```
+
+The only scope requested is
+`https://www.googleapis.com/auth/youtube.upload`. YouTube also accepts that
+scope for `thumbnails.set`, so no extra consent screen is needed.
+
+#### Authorize once
+
+On a machine with a browser:
+
+```bash
+autoclip publish auth
+```
+
+This opens Google's consent page and writes
+`~/.autoclip/secrets/youtube_token.json`. To verify the token can refresh
+without uploading anything:
+
+```bash
+autoclip publish auth --check
+```
+
+In Docker, run the auth command in a one-off container with port 8765
+published. The command binds `0.0.0.0` but redirects to `localhost`, so the
+browser on the host can complete the flow:
+
+```bash
+docker compose run --rm -p 8765:8765 autoclip \
+  autoclip publish auth --host 0.0.0.0 --port 8765
+```
+
+If that is inconvenient, authorize on the host and copy both files into the
+running container's `/data` volume:
+
+```bash
+docker compose cp ~/.autoclip/secrets/youtube_client_secret.json \
+  autoclip:/data/secrets/youtube_client_secret.json
+docker compose cp ~/.autoclip/secrets/youtube_token.json \
+  autoclip:/data/secrets/youtube_token.json
+```
+
+#### Use it
+
+1. Export a clip from **Review**. It appears under **Publish**.
+2. Open it, press **Generate title & description**, and edit the result. The
+   proposal is a YouTube title for this Short, not necessarily a copy of the
+   internal clip title.
+3. Press **Generate thumbnail**. If you do not like it, edit the prompt and
+   press **Retry with new prompt**. The previous image stays until a new one
+   succeeds. The prompt tells the model to keep the main subject and all text
+   at least ~8–10% away from every edge; the preview shows a safe-area guide.
+4. Choose privacy (**Private** by default), press **Publish**, and wait for the
+   status to become **Published**. The YouTube link appears when it finishes.
+
+**Private** is the default. Privacy is set at upload; change it later in
+YouTube Studio if needed. A **Public** upload goes live immediately.
+
+#### Limits and caveats
+
+- The default YouTube API quota allows **100 `videos.insert` calls per day**;
+  `thumbnails.set` costs 50 units from the daily 10,000-unit pool. Quotas reset
+  at midnight US Pacific.
+- If YouTube rejects the custom thumbnail (for example, the channel is not
+  eligible), the video upload still succeeds. The tcap still remains at the end
+  of the MP4 and can be selected in YouTube Studio.
+- Uploading runs as a background task. You can leave the page; reopening the
+  publication shows the result.
+- The title is limited to 100 characters, the description to 5,000 bytes, and
+  tags to 500 characters in total. These are YouTube limits, not editorial
+  rules; AutoClip does not require a keyword count, hashtag suffix or fixed
+  description layout.
+- The thumbnail prompt is open-ended apart from one visual rule: keep the main
+  subject and text away from the edges. If the generated image needs resizing,
+  AutoClip pads it rather than cropping the safe area.
+- Thumbnail generation is a paid OpenAI Images call on every attempt, including
+  retries. Check your OpenAI pricing and usage.
+- `gpt-6-luna` is the default metadata model and `gpt-image-2.5-flare` the
+  default image model. If your account does not have access, change the model
+  in **Settings → Publishing** to one your account can use.
 
 ### Caption presets
 
@@ -257,7 +397,9 @@ Also unverified: whether the clip *picks* are good. That's a judgement call abou
 
 Deliberate, not oversights:
 
-- **No direct posting** to TikTok/Instagram/YouTube. Their APIs are approval-gated; AutoClip exports files.
+- **No direct posting by default** to TikTok/Instagram/YouTube. The optional
+  **Publish** page uploads to YouTube only after you connect your own OAuth
+  credentials; AutoClip never ships credentials or posts on its own.
 - **No cloud version, no accounts, no telemetry.**
 - **No timeline editor** beyond trim handles and caption edits.
 - **No DRM circumvention**, ever.

@@ -8,7 +8,9 @@ export URLs) that don't belong in storage.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Annotated, Any, Literal
+from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -325,6 +327,131 @@ class ProviderStatusOut(BaseModel):
     has_key: bool = False
 
 
+class PublishStatusOut(BaseModel):
+    youtube_client_secret_present: bool
+    youtube_token_present: bool
+    youtube_ready: bool
+    openai_image_key_present: bool
+    metadata_provider: str
+    metadata_model: str
+    metadata_key_present: bool
+    image_model: str
+
+
+class PublishCandidateOut(BaseModel):
+    export_id: str
+    clip_id: str
+    job_id: str
+    source_title: str
+    clip_title: str
+    duration_s: float
+    ratio: str
+    size_bytes: int
+    export_created_at: str
+    download_url: str
+    available: bool
+    publication_id: str | None = None
+    publication_status: str | None = None
+
+
+class PublicationOut(BaseModel):
+    id: str
+    export_id: str
+    clip_id: str
+    job_id: str
+    source_title: str
+    clip_title: str
+    duration_s: float
+    ratio: str
+    export_created_at: str
+    status: str
+    title: str
+    description: str
+    tags: list[str]
+    best_day: str | None = None
+    thumbnail_prompt: str
+    thumbnail_url: str | None = None
+    thumbnail_wide_url: str | None = None
+    privacy_status: str
+    youtube_video_id: str | None = None
+    youtube_url: str | None = None
+    error: str | None = None
+    ready_to_upload: bool = False
+    created_at: str
+    updated_at: str
+    uploaded_at: str | None = None
+
+    @classmethod
+    def of(
+        cls,
+        publication: models.Publication,
+        clip: models.Clip,
+        source: models.Source,
+        export: models.Export,
+    ) -> PublicationOut:
+        version = quote(publication.updated_at, safe="")
+        thumbnail_ready = bool(
+            publication.thumbnail_path and Path(publication.thumbnail_path).is_file()
+        )
+        return cls(
+            id=publication.id,
+            export_id=publication.export_id,
+            clip_id=publication.clip_id,
+            job_id=clip.job_id,
+            source_title=source.title,
+            clip_title=clip.title,
+            duration_s=clip.duration_s,
+            ratio=export.ratio,
+            export_created_at=export.created_at,
+            status=publication.status,
+            title=publication.title,
+            description=publication.description,
+            tags=publication.tags,
+            best_day=publication.best_day,
+            thumbnail_prompt=publication.thumbnail_prompt,
+            thumbnail_url=(
+                f"/api/publish/{publication.id}/thumbnail?v={version}" if thumbnail_ready else None
+            ),
+            thumbnail_wide_url=(
+                f"/api/publish/{publication.id}/thumbnail-wide?v={version}"
+                if publication.thumbnail_wide_path
+                and Path(publication.thumbnail_wide_path).is_file()
+                else None
+            ),
+            privacy_status=publication.privacy_status,
+            youtube_video_id=publication.youtube_video_id,
+            youtube_url=publication.youtube_url,
+            error=publication.error,
+            ready_to_upload=(
+                publication.status in ("ready", "failed")
+                and bool(publication.title.strip())
+                and thumbnail_ready
+            ),
+            created_at=publication.created_at,
+            updated_at=publication.updated_at,
+            uploaded_at=publication.uploaded_at,
+        )
+
+
+class PublicationCreateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    export_id: str
+
+
+class PublicationPatchIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str | None = None
+    description: str | None = None
+    tags: list[str] | None = None
+    thumbnail_prompt: str | None = Field(default=None, max_length=4_000)
+    privacy_status: Literal["private", "unlisted", "public"] | None = None
+
+
+class ThumbnailRequestIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    prompt: str | None = Field(default=None, max_length=4_000)
+
+
 class SettingsOut(BaseModel):
     active_provider: str
     providers: dict[str, dict[str, Any]]
@@ -332,6 +459,7 @@ class SettingsOut(BaseModel):
     clips: dict[str, Any]
     ingest: dict[str, Any]
     export: dict[str, Any]
+    publish: dict[str, Any]
     insecure_secret_storage: bool
     #: Which providers have a key stored. The keys themselves never leave the
     #: keyring, so the UI shows presence, not value.
@@ -345,6 +473,7 @@ class SettingsIn(BaseModel):
     clips: dict[str, Any] | None = None
     ingest: dict[str, Any] | None = None
     export: dict[str, Any] | None = None
+    publish: dict[str, Any] | None = None
 
 
 class SecretIn(BaseModel):

@@ -26,11 +26,17 @@ def _settings_out(settings: config.Settings) -> SettingsOut:
         clips=payload["clips"],
         ingest=payload["ingest"],
         export=payload["export"],
+        publish=payload["publish"],
         insecure_secret_storage=payload["insecure_secret_storage"],
         keys_present={
             name: config.get_secret(name, settings) is not None for name in config.KEYED_PROVIDERS
         }
-        | {config.HF_TOKEN_KEY: config.get_secret(config.HF_TOKEN_KEY, settings) is not None},
+        | {
+            config.HF_TOKEN_KEY: config.get_secret(config.HF_TOKEN_KEY, settings) is not None,
+            config.OPENAI_IMAGE_KEY: (
+                config.get_secret(config.OPENAI_IMAGE_KEY, settings) is not None
+            ),
+        },
     )
 
 
@@ -53,7 +59,7 @@ async def put_settings(payload: SettingsIn) -> SettingsOut:
             )
         settings.active_provider = updates["active_provider"]
 
-    for section in ("whisper", "clips", "ingest", "export"):
+    for section in ("whisper", "clips", "ingest", "export", "publish"):
         if section in updates:
             current = getattr(settings, section)
             try:
@@ -68,6 +74,15 @@ async def put_settings(payload: SettingsIn) -> SettingsOut:
                 raise HTTPException(
                     status_code=400, detail=f"Invalid {section} settings: {exc}"
                 ) from exc
+
+    if settings.publish.metadata_provider and settings.publish.metadata_provider not in PROVIDERS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Invalid publish metadata provider. Use one of "
+                f"{', '.join(PROVIDERS)}, or an empty value for the active provider."
+            ),
+        )
 
     if "providers" in updates:
         for name, values in updates["providers"].items():
@@ -86,7 +101,7 @@ async def put_settings(payload: SettingsIn) -> SettingsOut:
 @router.put("/settings/secrets", status_code=204)
 async def put_secret(payload: SecretIn) -> None:
     """Store an API key or token. Values are write-only — never read back."""
-    valid = (*config.KEYED_PROVIDERS, config.HF_TOKEN_KEY)
+    valid = (*config.KEYED_PROVIDERS, config.HF_TOKEN_KEY, config.OPENAI_IMAGE_KEY)
     if payload.key not in valid:
         raise HTTPException(
             status_code=400, detail=f"Unknown secret. Expected one of: {', '.join(valid)}"

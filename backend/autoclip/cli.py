@@ -357,7 +357,7 @@ def config_path_cmd() -> None:
 def config_set_secret(
     key: str = typer.Argument(
         ...,
-        help="Provider name (anthropic, openai, gemini) or 'huggingface_token'.",
+        help=("Provider name (anthropic, openai, gemini), 'openai_image', or 'huggingface_token'."),
     ),
 ) -> None:
     """Store an API key or token. The value is prompted for, never passed as an argument.
@@ -365,7 +365,7 @@ def config_set_secret(
     Prompting rather than accepting a flag keeps the secret out of your shell
     history and out of the process list.
     """
-    valid = (*config.KEYED_PROVIDERS, config.HF_TOKEN_KEY)
+    valid = (*config.KEYED_PROVIDERS, config.HF_TOKEN_KEY, config.OPENAI_IMAGE_KEY)
     if key not in valid:
         console.print(f"[red]Unknown secret '{key}'.[/red] Expected one of: {', '.join(valid)}")
         raise typer.Exit(2)
@@ -391,6 +391,56 @@ def config_delete_secret(key: str = typer.Argument(..., help="Secret to remove."
     """Remove a stored secret."""
     config.delete_secret(key)
     console.print(f"[green]Removed {key}.[/green]")
+
+
+publish_app = typer.Typer(help="Publish finished exports to YouTube.", no_args_is_help=True)
+app.add_typer(publish_app, name="publish")
+
+
+@publish_app.command("auth")
+def publish_auth(
+    host: str = typer.Option(
+        "localhost", "--host", help="Interface for the consent callback server."
+    ),
+    port: int = typer.Option(0, "--port", "-p", help="Port to bind; 0 picks a free one."),
+    check: bool = typer.Option(False, "--check", help="Verify the token without uploading."),
+    force: bool = typer.Option(False, "--force", help="Re-run consent, replacing the token."),
+) -> None:
+    """Authorize YouTube uploads (one-time)."""
+    from .publishing import auth as publishing_auth
+
+    paths.ensure_layout()
+
+    if check:
+        try:
+            message = publishing_auth.check_token()
+        except publishing_auth.PublishingAuthError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1) from exc
+        console.print(f"[green]{message}[/green]")
+        return
+
+    token = publishing_auth.token_path()
+    if token.exists():
+        if not force:
+            console.print(
+                f"[yellow]A token already exists at {token}.[/yellow] "
+                "Use --force to authorize again, or --check to verify it."
+            )
+            raise typer.Exit(0)
+        if not typer.confirm(f"Replace the existing token at {token}?", default=False):
+            console.print("Cancelled.")
+            raise typer.Exit(0)
+        token.unlink(missing_ok=True)
+
+    try:
+        written = publishing_auth.authorize(host=host, port=port)
+    except publishing_auth.PublishingAuthError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    console.print(f"[green]YouTube token written to {written}.[/green]")
+    console.print("Verify it with [cyan]autoclip publish auth --check[/cyan].")
 
 
 @app.command()

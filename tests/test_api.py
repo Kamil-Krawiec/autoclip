@@ -150,6 +150,49 @@ class TestSettings:
 
         assert client.get("/api/settings").json()["keys_present"]["openai"] is False
 
+    def test_publish_defaults_are_exposed(self, client: TestClient) -> None:
+        publish = client.get("/api/settings").json()["publish"]
+
+        assert publish["metadata_provider"] == "openai"
+        assert publish["metadata_model"] == "gpt-6-luna"
+        assert publish["image_model"] == "gpt-image-2.5-flare"
+        assert publish["default_privacy"] == "private"
+
+    def test_publish_partial_update_leaves_other_fields_alone(self, client: TestClient) -> None:
+        response = client.put("/api/settings", json={"publish": {"metadata_model": "gpt-5-luna"}})
+
+        assert response.status_code == 200
+        publish = response.json()["publish"]
+        assert publish["metadata_model"] == "gpt-5-luna"
+        assert publish["image_size"] == "1080x1920"
+
+    def test_unknown_publish_provider_is_rejected(self, client: TestClient) -> None:
+        response = client.put("/api/settings", json={"publish": {"metadata_provider": "skynet"}})
+
+        assert response.status_code == 400
+
+    def test_empty_publish_provider_means_active_provider(self, client: TestClient) -> None:
+        response = client.put("/api/settings", json={"publish": {"metadata_provider": ""}})
+
+        assert response.status_code == 200
+        assert response.json()["publish"]["metadata_provider"] == ""
+
+    def test_bad_publish_image_size_is_rejected(self, client: TestClient) -> None:
+        response = client.put("/api/settings", json={"publish": {"image_size": "wide"}})
+
+        assert response.status_code == 400
+
+    def test_openai_image_key_is_a_separate_secret(self, client: TestClient, fake_keyring) -> None:
+        response = client.put(
+            "/api/settings/secrets", json={"key": "openai_image", "value": "sk-image"}
+        )
+
+        assert response.status_code == 204
+        keys = client.get("/api/settings").json()["keys_present"]
+        assert keys["openai_image"] is True
+        assert keys["openai"] is False
+        assert "sk-image" not in str(client.get("/api/settings").json())
+
 
 class TestSources:
     def test_empty_initially(self, client: TestClient) -> None:

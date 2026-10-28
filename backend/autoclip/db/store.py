@@ -18,6 +18,10 @@ from .models import (
     Export,
     Job,
     JobStatus,
+    PrivacyStatus,
+    Publication,
+    PublicationStatus,
+    PublishCandidate,
     Source,
     Transcript,
     utcnow,
@@ -433,3 +437,196 @@ def list_exports(clip_id: str) -> list[Export]:
             "SELECT * FROM exports WHERE clip_id = ? ORDER BY created_at DESC", (clip_id,)
         ).fetchall()
     return [Export.from_row(r) for r in rows]
+
+
+# --------------------------------------------------------------------------
+# Publications
+# --------------------------------------------------------------------------
+
+
+def create_publication(publication: Publication) -> Publication:
+    with connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO publications (id, export_id, clip_id, status, title,
+                                      description, tags_json, thumbnail_prompt,
+                                      thumbnail_path, thumbnail_wide_path,
+                                      final_path, best_day, privacy_status,
+                                      youtube_video_id, youtube_url, error,
+                                      created_at, updated_at, uploaded_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                publication.id,
+                publication.export_id,
+                publication.clip_id,
+                publication.status,
+                publication.title,
+                publication.description,
+                json.dumps(publication.tags, ensure_ascii=False),
+                publication.thumbnail_prompt,
+                publication.thumbnail_path,
+                publication.thumbnail_wide_path,
+                publication.final_path,
+                publication.best_day,
+                publication.privacy_status,
+                publication.youtube_video_id,
+                publication.youtube_url,
+                publication.error,
+                publication.created_at,
+                publication.updated_at,
+                publication.uploaded_at,
+            ),
+        )
+    return publication
+
+
+def get_publication(publication_id: str) -> Publication | None:
+    with connection() as conn:
+        row = conn.execute("SELECT * FROM publications WHERE id = ?", (publication_id,)).fetchone()
+    return Publication.from_row(row) if row else None
+
+
+def get_publication_by_export(export_id: str) -> Publication | None:
+    with connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM publications WHERE export_id = ?", (export_id,)
+        ).fetchone()
+    return Publication.from_row(row) if row else None
+
+
+def list_publications(limit: int = 50) -> list[Publication]:
+    with connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM publications ORDER BY created_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+    return [Publication.from_row(r) for r in rows]
+
+
+def update_publication(
+    publication_id: str,
+    *,
+    status: PublicationStatus | None = None,
+    title: str | None = None,
+    description: str | None = None,
+    tags: list[str] | None = None,
+    thumbnail_prompt: str | None = None,
+    thumbnail_path: str | None | _Unset = UNSET,
+    thumbnail_wide_path: str | None | _Unset = UNSET,
+    final_path: str | None | _Unset = UNSET,
+    best_day: str | None | _Unset = UNSET,
+    privacy_status: PrivacyStatus | None = None,
+    youtube_video_id: str | None | _Unset = UNSET,
+    youtube_url: str | None | _Unset = UNSET,
+    error: str | None | _Unset = UNSET,
+    uploaded_at: str | None | _Unset = UNSET,
+) -> Publication | None:
+    """Patch the supplied fields and always refresh ``updated_at``.
+
+    Nullable artifact/upload fields take :data:`UNSET` so passing ``None``
+    explicitly clears them (a retry clears the previous error).
+    """
+    fields: dict[str, Any] = {"updated_at": utcnow()}
+
+    for name, value in (
+        ("status", status),
+        ("title", title),
+        ("description", description),
+        ("thumbnail_prompt", thumbnail_prompt),
+        ("privacy_status", privacy_status),
+    ):
+        if value is not None:
+            fields[name] = value
+    if tags is not None:
+        fields["tags_json"] = json.dumps(tags, ensure_ascii=False)
+
+    for name, value in (
+        ("thumbnail_path", thumbnail_path),
+        ("thumbnail_wide_path", thumbnail_wide_path),
+        ("final_path", final_path),
+        ("best_day", best_day),
+        ("youtube_video_id", youtube_video_id),
+        ("youtube_url", youtube_url),
+        ("error", error),
+        ("uploaded_at", uploaded_at),
+    ):
+        if not isinstance(value, _Unset):
+            fields[name] = value
+
+    assignments = ", ".join(f"{name} = ?" for name in fields)
+    with connection() as conn:
+        conn.execute(
+            f"UPDATE publications SET {assignments} WHERE id = ?",
+            (*fields.values(), publication_id),
+        )
+        row = conn.execute("SELECT * FROM publications WHERE id = ?", (publication_id,)).fetchone()
+    return Publication.from_row(row) if row else None
+
+
+def list_publish_candidates(limit: int = 50, ratio: str = "9:16") -> list[PublishCandidate]:
+    """Latest export per clip, with the clip's job/source context.
+
+    Keeping only the newest export of each clip stops an edited-and-rendered
+    clip from appearing several times in the list.
+    """
+    query = """
+        SELECT e.id AS export_id, e.clip_id, e.ratio, e.size_bytes,
+               e.created_at AS export_created_at,
+               c.job_id, c.title AS clip_title,
+               (c.end_s - c.start_s) AS duration_s,
+               s.title AS source_title,
+               p.id AS publication_id, p.status AS publication_status
+        FROM exports e
+        JOIN clips c ON c.id = e.clip_id
+        JOIN jobs j ON j.id = c.job_id
+        JOIN sources s ON s.id = j.source_id
+        LEFT JOIN publications p ON p.export_id = e.id
+        WHERE e.ratio = ?
+          AND e.id = (
+              SELECT e2.id FROM exports e2
+              WHERE e2.clip_id = e.clip_id
+              ORDER BY e2.created_at DESC, e2.id DESC
+              LIMIT 1
+          )
+        ORDER BY e.created_at DESC
+        LIMIT ?
+    """
+    with connection() as conn:
+        rows = conn.execute(query, (ratio, limit)).fetchall()
+    return [
+        PublishCandidate(
+            export_id=row["export_id"],
+            clip_id=row["clip_id"],
+            job_id=row["job_id"],
+            source_title=row["source_title"],
+            clip_title=row["clip_title"],
+            duration_s=row["duration_s"],
+            ratio=row["ratio"],
+            size_bytes=row["size_bytes"],
+            export_created_at=row["export_created_at"],
+            publication_id=row["publication_id"],
+            publication_status=row["publication_status"],
+        )
+        for row in rows
+    ]
+
+
+def fail_interrupted_publications() -> int:
+    """Convert uploads left in ``uploading`` by a restart into ``failed``.
+
+    Without this a crash during upload leaves a row that the UI polls forever.
+    A retry is safe: the YouTube client reads the persisted video id before
+    inserting again.
+    """
+    with connection() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE publications
+            SET status = 'failed',
+                error = 'Upload was interrupted by a restart. Retry to continue.',
+                updated_at = ?
+            WHERE status = 'uploading'
+            """,
+            (utcnow(),),
+        )
+        return cursor.rowcount
