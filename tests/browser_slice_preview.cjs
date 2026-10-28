@@ -133,7 +133,7 @@ async function main() {
       }
     })
 
-    await page.goto(server.resolvedUrls.local[0] + 'jobs/job-1/clips')
+    await page.goto(server.resolvedUrls.local[0] + 'jobs/job-1/clips/clip-1')
     const button = name => page.getByRole('button', { name, exact: true })
 
     // The timeline is available immediately without changing an existing edit.

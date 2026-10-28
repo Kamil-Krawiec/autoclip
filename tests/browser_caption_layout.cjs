@@ -74,7 +74,7 @@ async function main() {
       return route.fulfill({ status: 404, json: { detail: 'fixture route missing' } })
     })
 
-    await page.goto(server.resolvedUrls.local[0] + 'jobs/job/clips')
+    await page.goto(server.resolvedUrls.local[0] + 'jobs/job/clips/a')
     const slider = name => page.getByRole('slider', { name, exact: true })
     const button = name => page.getByRole('button', { name, exact: true })
     await page.locator('summary', { hasText: 'Advanced / legacy caption layout' }).click()

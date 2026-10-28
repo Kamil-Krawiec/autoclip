@@ -45,7 +45,7 @@ async function main() {
     const button = name => page.getByRole('button', {name, exact:true})
     const range = name => page.getByRole('slider', {name, exact:true})
     const getClip = async id => (await context.request.get(`/api/clips/${id}`)).json()
-    await page.goto('/jobs/manual-job/clips')
+    await page.goto('/jobs/manual-job/clips/manual-a')
     await button('Pierwszy').waitFor()
     await button('Slice Manual').click()
     await page.getByText('Fine position', {exact:true}).click()

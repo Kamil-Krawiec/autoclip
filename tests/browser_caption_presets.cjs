@@ -87,9 +87,9 @@ async function main() {
       return route.fulfill({ status: 404, json: { detail: 'missing route' } })
     })
 
-    await page.goto(server.resolvedUrls.local[0] + 'jobs/job-1/clips')
-    const details = page.locator('details')
+    await page.goto(server.resolvedUrls.local[0] + 'jobs/job-1/clips/clip-a')
     const summary = page.locator('summary', { hasText: 'Advanced / legacy caption layout' })
+    const details = page.locator('details').filter({ has: summary })
     const slider = name => page.getByRole('slider', { name, exact: true })
     const button = name => page.getByRole('button', { name, exact: true })
 
