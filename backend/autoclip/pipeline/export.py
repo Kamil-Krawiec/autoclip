@@ -117,6 +117,9 @@ def build_video_filtergraph(
             )
             parts.append(prefix)
 
+        if segment.split:
+            parts.extend(_split_chain(source_label, index, out_w, out_h))
+            continue
         if segment.fit:
             parts.extend(_fit_chain(source_label, index, out_w, out_h))
             continue
@@ -152,6 +155,20 @@ def build_video_filtergraph(
         parts.append(f"{ass_out}trim=start={start_s:.4f}:end={end_s:.4f},setpts=PTS-STARTPTS[vout]")
 
     return ";".join(parts)
+
+
+def _split_chain(source_label: str, index: int, out_w: int, out_h: int) -> list[str]:
+    panel_h = out_h // 2
+    fit = (
+        f"scale={out_w}:{panel_h}:force_original_aspect_ratio=decrease,"
+        f"pad={out_w}:{panel_h}:(ow-iw)/2:(oh-ih)/2"
+    )
+    return [
+        f"{source_label}format=yuv444p,split=2[left{index}][right{index}]",
+        f"[left{index}]crop=iw/2:ih:0:0,{fit}[top{index}]",
+        f"[right{index}]crop=iw-iw/2:ih:iw/2:0,{fit}[bottom{index}]",
+        f"[top{index}][bottom{index}]vstack,setsar=1,format=yuv420p[v{index}]",
+    ]
 
 
 def _fit_chain(source_label: str, index: int, out_w: int, out_h: int) -> list[str]:

@@ -94,6 +94,93 @@ def test_api_patch_slices_persists_and_resets_to_auto(client, sample_setup):
     assert store.get_clip_edit(clip.id).framing is None
 
 
+def test_split_screen_saved_and_resolved_per_slice(client, sample_setup):
+    source, job, clip = sample_setup
+    slices = {
+        "mode": "slices",
+        "segments": [
+            {"start_s": 10.0, "end_s": 15.0, "framing": {"mode": "auto"}},
+            {"start_s": 15.0, "end_s": 25.0, "framing": {"mode": "split"}},
+        ],
+    }
+    response = client.patch(f"/api/clips/{clip.id}/edit", json={"framing": slices})
+    assert response.status_code == 200, response.text
+    db.reset_connections()
+    edit = store.get_clip_edit(clip.id)
+    assert edit.framing == slices
+    path = resolve_crop_path(source, clip, job, edit, None)
+    assert not path.segments[0].split
+    assert path.segments[-1].split
+    assert CropPath.from_dict(path.to_dict()).segments[-1].split
+
+
+@pytest.mark.slow
+def test_split_screen_render_preserves_both_halves(client, tmp_path: Path):
+    source_path = tmp_path / "split-source.mp4"
+    subprocess.run(
+        [
+            ffmpeg.ffmpeg_path(),
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=red:s=640x360:r=5:d=2,drawbox=x=320:y=0:w=320:h=360:color=blue:t=fill",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            str(source_path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    source = store.create_source(
+        Source(
+            id=new_id(), type="upload", path=str(source_path), duration_s=2, width=640, height=360
+        )
+    )
+    job = store.create_job(Job(id=new_id(), source_id=source.id, status="done"))
+    clip = Clip(id=new_id(), job_id=job.id, start_s=0, end_s=2)
+    store.replace_clips(job.id, [clip])
+    Transcript(words=[Word("Test", 0, 1)]).save(JobWorkspace(job.id).transcript)
+    res = client.patch(
+        f"/api/clips/{clip.id}/edit", json={"framing": {"mode": "split"}, "burn_captions": False}
+    )
+    assert res.status_code == 200, res.text
+    result = client.post(f"/api/clips/{clip.id}/export", json={})
+    assert result.status_code == 201, result.text
+    path = Path(store.get_export(result.json()["id"]).path)
+    pixels = subprocess.run(
+        [
+            ffmpeg.ffmpeg_path(),
+            "-v",
+            "error",
+            "-i",
+            str(path),
+            "-frames:v",
+            "1",
+            "-vf",
+            "scale=108:192",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-",
+        ],
+        check=True,
+        capture_output=True,
+    ).stdout
+
+    def pixel(x, y):
+        offset = (y * 108 + x) * 3
+        return pixels[offset : offset + 3]
+
+    assert pixel(54, 48)[0] > 200 and pixel(54, 48)[2] < 30
+    assert pixel(54, 144)[2] > 200 and pixel(54, 144)[0] < 30
+
+
 def test_invalid_slices_framing_rejected(client, sample_setup):
     _, _, clip = sample_setup
     url = f"/api/clips/{clip.id}/edit"

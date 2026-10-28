@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import type { CropPath, ManualFraming } from '../api'
+import type { FramingGeometry, PanRequest } from './ClipPlayer'
 
 const MIN_ZOOM = 1
 const MAX_ZOOM = 4
@@ -20,30 +21,29 @@ function sameFraming(a: ManualFraming, b: ManualFraming): boolean {
 }
 
 export function FramingEditor({
-  src,
   startS,
   framing,
   cropPath,
   disabled,
   onCommit,
   onDirtyChange,
+  onDraftGeometry,
+  panRequest,
 }: {
-  src: string
   startS: number
   framing: ManualFraming
   cropPath: CropPath | null
   disabled: boolean
   onCommit: (framing: ManualFraming) => Promise<boolean>
   onDirtyChange: (dirty: boolean) => void
+  onDraftGeometry: (geometry: FramingGeometry | null) => void
+  panRequest: PanRequest | null
 }) {
-  const videoRef = useRef<HTMLVideoElement>(null)
-  const stageRef = useRef<HTMLDivElement>(null)
   const [draft, setDraft] = useState<ManualFraming>(framing)
   const draftRef = useRef<ManualFraming>(framing)
   const savedRef = useRef<ManualFraming>(framing)
-  const [dragging, setDragging] = useState(false)
+  const lastPan = useRef(panRequest)
   const [committing, setCommitting] = useState(false)
-  const activePointerIdRef = useRef<number | null>(null)
 
   savedRef.current = framing
   draftRef.current = draft
@@ -51,36 +51,7 @@ export function FramingEditor({
   useEffect(() => {
     setDraft(framing)
     draftRef.current = framing
-    setDragging(false)
-    activePointerIdRef.current = null
   }, [framing.center_x, framing.center_y, framing.zoom, startS])
-
-  useEffect(() => {
-    if (disabled) {
-      setDragging(false)
-      activePointerIdRef.current = null
-    }
-  }, [disabled])
-
-  useEffect(() => {
-    const video = videoRef.current
-    if (!video) return
-    const seekToStart = () => {
-      try {
-        video.pause()
-        if (Math.abs(video.currentTime - startS) > 0.05) {
-          video.currentTime = Math.max(0, startS)
-        }
-      } catch {
-        /* Ignore seek errors before metadata is ready. */
-      }
-    }
-    seekToStart()
-    video.addEventListener('loadedmetadata', seekToStart)
-    return () => {
-      video.removeEventListener('loadedmetadata', seekToStart)
-    }
-  }, [src, startS])
 
   // Draft bounds approximate the acknowledged server crop; FFmpeg parity stays server-owned.
   const bounds = useCallback((zoom: number) => {
@@ -128,6 +99,23 @@ export function FramingEditor({
     [clampDraft],
   )
 
+  useEffect(() => {
+    onDraftGeometry(geometry)
+  }, [geometry, onDraftGeometry])
+
+  useEffect(() => () => onDraftGeometry(null), [onDraftGeometry])
+
+  useEffect(() => {
+    if (panRequest === lastPan.current) return
+    lastPan.current = panRequest
+    if (!panRequest || disabled || !geometry) return
+    updateDraft((current) => ({
+      ...current,
+      center_x: current.center_x - panRequest.dx * geometry.widthNorm,
+      center_y: current.center_y - panRequest.dy * geometry.heightNorm,
+    }))
+  }, [panRequest])
+
   const commitDraft = useCallback(
     async (candidate: ManualFraming) => {
       const normalized = clampDraft(candidate)
@@ -153,21 +141,6 @@ export function FramingEditor({
     [clampDraft, onCommit],
   )
 
-  const moveCenterFromPointer = useCallback(
-    (clientX: number, clientY: number) => {
-      const rect = stageRef.current?.getBoundingClientRect()
-      if (!rect || rect.width <= 0 || rect.height <= 0) return
-      const rawX = (clientX - rect.left) / rect.width
-      const rawY = (clientY - rect.top) / rect.height
-      updateDraft((current) => ({
-        ...current,
-        center_x: rawX,
-        center_y: rawY,
-      }))
-    },
-    [updateDraft],
-  )
-
   const locked = disabled || committing || !geometry
   const isDirty = !sameFraming(draft, framing)
   useEffect(() => { onDirtyChange(isDirty) }, [isDirty, onDirtyChange])
@@ -182,7 +155,7 @@ export function FramingEditor({
         <div>
           <span className="eyebrow">Manual framing</span>
           <p className="mt-0.5 text-xs text-ink-400">
-            Approximate draft below; the top player shows the last saved crop. Apply to update it.
+            Drag the video above to move the frame, or adjust the controls below.
           </p>
         </div>
         {isDirty && (
@@ -192,150 +165,71 @@ export function FramingEditor({
         )}
       </div>
 
-      <div
-        ref={stageRef}
-        onPointerDown={(e) => {
-          if (locked) return
-          e.preventDefault()
-          try {
-            e.currentTarget.setPointerCapture(e.pointerId)
-          } catch {
-            /* Fallback when pointer capture is unavailable in synthetic tests. */
-          }
-          activePointerIdRef.current = e.pointerId
-          setDragging(true)
-          moveCenterFromPointer(e.clientX, e.clientY)
-        }}
-        onPointerMove={(e) => {
-          if (!dragging || locked) return
-          if (
-            activePointerIdRef.current !== null &&
-            e.pointerId !== activePointerIdRef.current
-          ) {
-            return
-          }
-          moveCenterFromPointer(e.clientX, e.clientY)
-        }}
-        onPointerUp={(e) => {
-          if (!dragging) return
-          if (
-            activePointerIdRef.current !== null &&
-            e.pointerId !== activePointerIdRef.current
-          ) {
-            return
-          }
-          try {
-            if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-              e.currentTarget.releasePointerCapture(e.pointerId)
-            }
-          } catch {
-            /* Ignore capture release errors. */
-          }
-          activePointerIdRef.current = null
-          setDragging(false)
-          void commitDraft(draftRef.current)
-        }}
-        onPointerCancel={() => {
-          if (!dragging) return
-          activePointerIdRef.current = null
-          setDragging(false)
-          draftRef.current = savedRef.current
-          setDraft(savedRef.current)
-        }}
-        style={
-          geometry
-            ? { aspectRatio: `${geometry.sourceWidth} / ${geometry.sourceHeight}` }
-            : undefined
-        }
-        className={[
-          'relative w-full touch-none select-none overflow-hidden bg-ink-950',
-          locked ? 'cursor-not-allowed opacity-70' : 'cursor-move',
-        ].join(' ')}
-      >
-        <video
-          ref={videoRef}
-          src={src}
-          muted
-          playsInline
-          preload="metadata"
-          className="pointer-events-none h-full w-full object-contain"
+      <details>
+        <summary className="cursor-pointer text-xs text-ink-400">Fine position</summary>
+        <div className="mt-2 grid gap-3 sm:grid-cols-2">
+          <label className="block text-xs text-ink-300">
+            <span className="flex justify-between">
+              <span>Center X</span>
+              <span className="numeric text-ink-400">{Math.round(draft.center_x * 100)}%</span>
+            </span>
+            <input
+              type="range"
+              aria-label="Center X"
+              min={0}
+              max={100}
+              step={1}
+              value={Math.round(draft.center_x * 100)}
+              onChange={(e) => {
+                const pct = Number(e.target.value)
+                updateDraft((current) => ({ ...current, center_x: pct / 100 }))
+              }}
+              className="mt-1 w-full accent-sodium-500"
+            />
+          </label>
+
+          <label className="block text-xs text-ink-300">
+            <span className="flex justify-between">
+              <span>Center Y</span>
+              <span className="numeric text-ink-400">{Math.round(draft.center_y * 100)}%</span>
+            </span>
+            <input
+              type="range"
+              aria-label="Center Y"
+              min={0}
+              max={100}
+              step={1}
+              value={Math.round(draft.center_y * 100)}
+              onChange={(e) => {
+                const pct = Number(e.target.value)
+                updateDraft((current) => ({ ...current, center_y: pct / 100 }))
+              }}
+              className="mt-1 w-full accent-sodium-500"
+            />
+          </label>
+
+        </div>
+      </details>
+
+      <label className="block text-xs text-ink-300">
+        <span className="flex justify-between">
+          <span>Zoom</span>
+          <span className="numeric text-ink-400">{draft.zoom.toFixed(1)}×</span>
+        </span>
+        <input
+          type="range"
+          aria-label="Zoom"
+          min={MIN_ZOOM}
+          max={MAX_ZOOM}
+          step={0.1}
+          value={draft.zoom}
+          onChange={(e) => {
+            const zoom = Number(e.target.value)
+            updateDraft((current) => ({ ...current, zoom }))
+          }}
+          className="mt-1 w-full accent-sodium-500"
         />
-
-        {geometry && (
-          <div
-            data-testid="framing-crop-overlay"
-            style={{
-              left: `${geometry.leftNorm * 100}%`,
-              top: `${geometry.topNorm * 100}%`,
-              width: `${geometry.widthNorm * 100}%`,
-              height: `${geometry.heightNorm * 100}%`,
-            }}
-            className="pointer-events-none absolute border-2 border-sodium-500 bg-sodium-500/10 shadow-[0_0_0_9999px_rgba(0,0,0,0.55)]"
-          />
-        )}
-      </div>
-
-      <div className="grid gap-3 sm:grid-cols-3">
-        <label className="block text-xs text-ink-300">
-          <span className="flex justify-between">
-            <span>Center X</span>
-            <span className="numeric text-ink-400">{Math.round(draft.center_x * 100)}%</span>
-          </span>
-          <input
-            type="range"
-            aria-label="Center X"
-            min={0}
-            max={100}
-            step={1}
-            value={Math.round(draft.center_x * 100)}
-            onChange={(e) => {
-              const pct = Number(e.target.value)
-              updateDraft((current) => ({ ...current, center_x: pct / 100 }))
-            }}
-            className="mt-1 w-full accent-sodium-500"
-          />
-        </label>
-
-        <label className="block text-xs text-ink-300">
-          <span className="flex justify-between">
-            <span>Center Y</span>
-            <span className="numeric text-ink-400">{Math.round(draft.center_y * 100)}%</span>
-          </span>
-          <input
-            type="range"
-            aria-label="Center Y"
-            min={0}
-            max={100}
-            step={1}
-            value={Math.round(draft.center_y * 100)}
-            onChange={(e) => {
-              const pct = Number(e.target.value)
-              updateDraft((current) => ({ ...current, center_y: pct / 100 }))
-            }}
-            className="mt-1 w-full accent-sodium-500"
-          />
-        </label>
-
-        <label className="block text-xs text-ink-300">
-          <span className="flex justify-between">
-            <span>Zoom</span>
-            <span className="numeric text-ink-400">{draft.zoom.toFixed(1)}×</span>
-          </span>
-          <input
-            type="range"
-            aria-label="Zoom"
-            min={MIN_ZOOM}
-            max={MAX_ZOOM}
-            step={0.1}
-            value={draft.zoom}
-            onChange={(e) => {
-              const zoom = Number(e.target.value)
-              updateDraft((current) => ({ ...current, zoom }))
-            }}
-            className="mt-1 w-full accent-sodium-500"
-          />
-        </label>
-      </div>
+      </label>
 
       <div className="flex items-center justify-end gap-2 pt-1">
         <button

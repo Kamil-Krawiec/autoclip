@@ -70,7 +70,7 @@ export interface AutoFraming {
 }
 
 export interface Framing {
-  mode: 'fit'
+  mode: 'fit' | 'split'
 }
 
 export interface ManualFraming {
@@ -160,6 +160,7 @@ export interface CropSegment {
   strategy: 'track' | 'wide' | 'general'
   zoom: number
   fit: boolean
+  split?: boolean
 }
 
 /** Mirrors autoclip.pipeline.reframe.croppath.CropPath. */

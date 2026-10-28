@@ -19,7 +19,10 @@ const ASPECTS: Record<string, [number, number]> = {
 }
 
 /** Tallest the preview may be, so the transport row stays on screen. */
-const MAX_HEIGHT_VH = 62
+const MAX_HEIGHT_VH = 45
+
+export type FramingGeometry = { widthNorm: number; heightNorm: number; leftNorm: number; topNorm: number }
+export type PanRequest = { dx: number; dy: number; id: number }
 
 function readStoredVolume(): number {
   const stored = Number(window.localStorage.getItem(VOLUME_KEY))
@@ -45,6 +48,9 @@ export function ClipPlayer({
   burnCaptions = true,
   captionOverrides,
   onPlayheadChange,
+  seekRequest,
+  draftGeometry,
+  onPan,
 }: {
   src: string
   startS: number
@@ -56,9 +62,14 @@ export function ClipPlayer({
   burnCaptions?: boolean
   captionOverrides?: CaptionOverrides | null
   onPlayheadChange?: (sourceTimeS: number) => void
+  seekRequest?: { time: number; id: number } | null
+  draftGeometry?: FramingGeometry | null
+  onPan?: (dx: number, dy: number) => void
 }) {
   const video = useRef<HTMLVideoElement>(null)
   const bgVideo = useRef<HTMLVideoElement>(null)
+  const drag = useRef<{ x: number; y: number; moved: boolean } | null>(null)
+  const suppressClick = useRef(false)
   const [playing, setPlaying] = useState(false)
   const [time, setTime] = useState(startS)
   const [volume, setVolume] = useState(readStoredVolume)
@@ -121,6 +132,14 @@ export function ClipPlayer({
       void bg.play().catch(() => {})
     }
   }, [])
+
+  useEffect(() => {
+    const element = video.current
+    if (!element || !seekRequest) return
+    element.currentTime = Math.max(startS, Math.min(endS, seekRequest.time))
+    updateTime(element.currentTime)
+    syncBackground(true)
+  }, [seekRequest, startS, endS, updateTime, syncBackground])
 
   // Re-seek whenever the clip or its trim changes, so the preview always starts
   // where the export will.
@@ -192,18 +211,34 @@ export function ClipPlayer({
   const duration = Math.max(0.01, endS - startS)
 
   const activeSegment = activeCropSegment(cropPath, elapsed)
-  const isFit = Boolean(activeSegment?.fit)
-  const cropStyle = isFit ? null : cropWindowStyle(cropPath, activeSegment, elapsed)
+  const isFit = !draftGeometry && Boolean(activeSegment?.fit)
+  const isSplit = !draftGeometry && Boolean(activeSegment?.split)
+  const cropStyle = draftGeometry ? {
+    width: `${100 / draftGeometry.widthNorm}%`,
+    height: `${100 / draftGeometry.heightNorm}%`,
+    left: `${-100 * draftGeometry.leftNorm / draftGeometry.widthNorm}%`,
+    top: `${-100 * draftGeometry.topNorm / draftGeometry.heightNorm}%`,
+  } : isFit || isSplit ? null : cropWindowStyle(cropPath, activeSegment, elapsed)
 
   useEffect(() => {
-    if (!isFit) {
+    if (!isFit && !isSplit) {
       bgVideo.current?.pause()
       return
     }
     syncBackground(true)
-  }, [isFit, src, syncBackground])
+  }, [isFit, isSplit, src, syncBackground])
 
   const [aspectW, aspectH] = ASPECTS[ratio] ?? ASPECTS['9:16']
+  const sourceAspect = (cropPath?.source_width || 1) / (cropPath?.source_height || 1)
+  const panelWidth = Math.min(1, sourceAspect * aspectH / (4 * aspectW))
+  const panelHeight = panelWidth * 2 * aspectW / (sourceAspect * aspectH)
+  const panelLeft = (1 - panelWidth) / 2
+  const panelTop = (0.5 - panelHeight) / 2
+  const splitVideoStyle = {
+    width: `${panelWidth * 200}%`, height: `${panelHeight * 100}%`,
+    left: `${panelLeft * 100}%`, top: `${panelTop * 100}%`,
+    clipPath: 'inset(0 50% 0 0)',
+  }
   // Height alone can't bound the box: with width:100% and an aspect-ratio, a
   // max-height clamp shortens the element without narrowing it, so the rendered
   // shape stops matching the ratio — a 9:16 preview ends up looking square.
@@ -213,9 +248,34 @@ export function ClipPlayer({
   return (
     <div className="mx-auto flex w-full flex-col items-stretch" style={{ maxWidth }}>
       <div
-        className="relative w-full overflow-hidden bg-ink-850"
-        style={{ aspectRatio: `${aspectW} / ${aspectH}`, containerType: 'size' }}
-        onClick={toggle}
+        className={`relative w-full overflow-hidden ${isSplit ? 'bg-black' : 'bg-ink-850'}`}
+        onClick={() => {
+          if (suppressClick.current) { suppressClick.current = false; return }
+          toggle()
+        }}
+        onPointerDown={(event) => {
+          if (!draftGeometry || !onPan || event.button !== 0) return
+          drag.current = { x: event.clientX, y: event.clientY, moved: false }
+          event.currentTarget.setPointerCapture(event.pointerId)
+        }}
+        onPointerMove={(event) => {
+          if (!drag.current || !onPan) return
+          const rect = event.currentTarget.getBoundingClientRect()
+          if (!rect.width || !rect.height) return
+          const dx = event.clientX - drag.current.x
+          const dy = event.clientY - drag.current.y
+          if (!drag.current.moved && Math.abs(dx) + Math.abs(dy) < 3) return
+          drag.current = { x: event.clientX, y: event.clientY, moved: true }
+          onPan(dx / rect.width, dy / rect.height)
+        }}
+        onPointerUp={() => {
+          suppressClick.current = Boolean(drag.current?.moved)
+          drag.current = null
+        }}
+        onPointerCancel={() => { drag.current = null }}
+        data-testid="clip-preview"
+        {...(draftGeometry ? { 'data-editing-framing': 'true' } : {})}
+        style={{ aspectRatio: `${aspectW} / ${aspectH}`, containerType: 'size', touchAction: draftGeometry ? 'none' : undefined }}
         role="button"
         tabIndex={0}
         aria-label={playing ? 'Pause' : 'Play'}
@@ -226,7 +286,7 @@ export function ClipPlayer({
           }
         }}
       >
-        {isFit && (
+        {(isFit || isSplit) && (
           <video
             ref={bgVideo}
             src={src}
@@ -236,7 +296,8 @@ export function ClipPlayer({
             tabIndex={-1}
             aria-hidden="true"
             onLoadedMetadata={() => syncBackground(true)}
-            className="pointer-events-none absolute inset-0 size-full scale-110 object-cover blur-xl"
+            className={isSplit ? 'pointer-events-none absolute max-w-none' : 'pointer-events-none absolute inset-0 size-full scale-110 object-cover blur-xl'}
+            style={isSplit ? { ...splitVideoStyle, left: `${(panelLeft - panelWidth) * 100}%`, top: `${(0.5 + panelTop) * 100}%`, clipPath: 'inset(0 0 0 50%)' } : undefined}
           />
         )}
 
@@ -244,13 +305,15 @@ export function ClipPlayer({
           ref={video}
           src={src}
           className={
-            isFit
+            isSplit
+              ? 'absolute max-w-none'
+              : isFit
               ? 'relative z-10 size-full object-contain'
               : cropStyle
                 ? 'absolute max-w-none'
                 : 'size-full object-cover'
           }
-          style={cropStyle ?? undefined}
+          style={isSplit ? splitVideoStyle : cropStyle ?? undefined}
           onTimeUpdate={onTimeUpdate}
           onPlay={() => {
             setPlaying(true)
@@ -304,12 +367,7 @@ export function ClipPlayer({
           onToggleMute={() => setMuted((current) => !current)}
         />
 
-        <div className="h-px flex-1 bg-ink-800">
-          <div
-            className="h-px origin-left bg-sodium-500"
-            style={{ transform: `scaleX(${elapsed / duration})` }}
-          />
-        </div>
+        <div className="flex-1" />
         <span className="numeric text-xs text-ink-500">
           {formatTimecode(elapsed)} / {formatTimecode(duration)}
         </span>

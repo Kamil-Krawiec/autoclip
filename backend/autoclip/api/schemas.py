@@ -159,7 +159,7 @@ class ExportOut(BaseModel):
 
 class AutoFitFramingIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    mode: Literal["auto", "fit"]
+    mode: Literal["auto", "fit", "split"]
 
 
 class ManualFramingIn(BaseModel):

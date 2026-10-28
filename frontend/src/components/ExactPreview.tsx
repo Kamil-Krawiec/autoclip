@@ -185,13 +185,9 @@ export function ExactPreview({
               Clear preview
             </button>
           </div>
-          <video
-            key={previewUrl}
-            src={previewUrl}
-            controls
-            playsInline
-            className="mx-auto max-h-[48vh] w-full bg-ink-950 object-contain"
-          />
+          <a href={previewUrl} target="_blank" rel="noreferrer" className="text-sm text-sodium-500 underline">
+            Open exact preview
+          </a>
         </div>
       )}
     </div>

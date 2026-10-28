@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict')
+const fs = require('node:fs')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { chromium } = require(process.env.AUTOCLIP_PLAYWRIGHT_MODULE || 'playwright')
@@ -24,9 +25,9 @@ async function main() {
   try {
     await server.listen()
     browser = await chromium.launch({ headless: true })
-    const page = await browser.newPage({ viewport: { width: 375, height: 900 } })
+    const page = await browser.newPage({ viewport: process.env.AUTOCLIP_DESKTOP ? { width: 1600, height: 1000 } : { width: 375, height: 900 } })
     page.setDefaultTimeout(10000)
-    const errors = [], edits = [], previewRequests = []
+    const errors = [], edits = [], trims = [], previewRequests = []
     let failPreview = false, previewBusy = false, holdPreview = false, releaseHeldPreview
 
     page.on('pageerror', error => errors.push(error.message))
@@ -74,6 +75,13 @@ async function main() {
         Object.assign(clip, patch)
         return route.fulfill({ json: clip })
       }
+      if (/^\/api\/clips\/[^/]+$/.test(p) && req.method() === 'PATCH') {
+        const clip = clips.find(c => c.id === p.split('/')[3])
+        const patch = req.postDataJSON()
+        trims.push(patch)
+        Object.assign(clip, patch)
+        return route.fulfill({ json: clip })
+      }
       if (p.endsWith('/preview') && req.method() === 'POST') {
         const id = p.split('/')[3], body = req.postDataJSON()
         previewRequests.push({ id, body })
@@ -91,7 +99,18 @@ async function main() {
           body: Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70]),
         })
       }
-      if (p.endsWith('/media')) return route.fulfill({ status: 404, body: '' })
+      if (p.endsWith('/media')) {
+        if (process.env.AUTOCLIP_TEST_VIDEO) {
+          const bytes = fs.readFileSync(process.env.AUTOCLIP_TEST_VIDEO)
+          const match = /^bytes=(\d+)-(\d*)$/.exec(req.headers().range || '')
+          if (match) {
+            const start = Number(match[1]), end = match[2] ? Math.min(Number(match[2]), bytes.length - 1) : bytes.length - 1
+            return route.fulfill({ status: 206, contentType: 'video/mp4', headers: { 'Content-Range': `bytes ${start}-${end}/${bytes.length}`, 'Accept-Ranges': 'bytes' }, body: bytes.subarray(start, end + 1) })
+          }
+          return route.fulfill({ body: bytes, contentType: 'video/mp4', headers: { 'Accept-Ranges': 'bytes' } })
+        }
+        return route.fulfill({ status: 404, body: '' })
+      }
       if (p === '/api/providers/status') return route.fulfill({ json: [] })
       if (p === '/api/system') return route.fulfill({ json: { accel: 'cpu' } })
       return route.fulfill({ status: 404, json: { detail: 'missing route' } })
@@ -117,7 +136,11 @@ async function main() {
     await page.goto(server.resolvedUrls.local[0] + 'jobs/job-1/clips')
     const button = name => page.getByRole('button', { name, exact: true })
 
+    // The timeline is available immediately without changing an existing edit.
+    await page.getByRole('button', { name: /^Slice 1:/ }).waitFor()
+    assert.equal(edits.length, 0)
     // 1. Enable per-slice framing
+    await page.getByText('Whole clip framing', { exact: true }).click()
     await button('Per-slice framing').click()
     await eventually(() => assert.equal(edits.length, 1))
     assert.equal(edits[0].patch.framing.mode, 'slices')
@@ -126,6 +149,9 @@ async function main() {
 
     // 2. Split slice at playhead
     const video = page.locator('video').first()
+    if (process.env.AUTOCLIP_TEST_VIDEO) {
+      await page.waitForFunction(() => document.querySelector('video')?.readyState >= 1)
+    }
     await video.evaluate(el => { el.currentTime = 4.0; el.dispatchEvent(new Event('timeupdate')) })
     await page.getByRole('button', { name: /^Split slice at playhead/ }).click()
     await eventually(() => assert.equal(edits.length, 2))
@@ -134,11 +160,44 @@ async function main() {
     assert.equal(twoSlices[0].end_s, 4.0)
     assert.equal(twoSlices[1].start_s, 4.0)
 
+    // A timeline click selects the part and seeks the actual player without saving.
+    const firstSlice = page.getByRole('button', { name: /^Slice 1:/ })
+    await firstSlice.click()
+    await page.waitForFunction(() => Math.abs(document.querySelector('video').currentTime - 2) < 0.2)
+    assert.equal(await firstSlice.getAttribute('aria-pressed'), 'true')
+    const secondSlice = page.getByRole('button', { name: /^Slice 2:/ })
+    await secondSlice.click()
+    await page.waitForFunction(() => Math.abs(document.querySelector('video').currentTime - 7) < 0.2)
+    assert.equal(await secondSlice.getAttribute('aria-pressed'), 'true')
+    assert.equal(edits.length, 2)
+    if (process.env.AUTOCLIP_SCREENSHOT) await page.screenshot({ path: process.env.AUTOCLIP_SCREENSHOT, fullPage: true })
+
     // 3. Select slice and set Manual mode, adjust zoom and Apply framing
     await button('Slice Manual').click()
+    await page.getByText('Fine position', { exact: true }).click()
+    if (process.env.AUTOCLIP_TEST_VIDEO) {
+      await page.locator('[data-editing-framing="true"]').waitFor()
+      assert.equal(await page.locator('video').count(), 1)
+      assert.equal(await page.getByRole('group', { name: 'Framing slices' }).count(), 1)
+      if (process.env.AUTOCLIP_RESIZE_SCREENSHOT) await page.screenshot({ path: process.env.AUTOCLIP_RESIZE_SCREENSHOT, fullPage: true })
+    }
+    const originalWidth = await video.evaluate(el => parseFloat(el.style.width))
     await page.getByRole('slider', { name: 'Zoom' }).focus()
     await page.keyboard.press('ArrowRight')
     await page.getByRole('status').filter({ hasText: 'Unsaved framing' }).waitFor()
+    if (process.env.AUTOCLIP_TEST_VIDEO) {
+      await video.evaluate(el => { el.currentTime = 7.5; el.dispatchEvent(new Event('timeupdate')) })
+      await page.waitForFunction(() => Math.abs(document.querySelector('video').currentTime - 7.5) < 0.2)
+      assert.ok(Number(await page.getByRole('slider', { name: 'Zoom' }).inputValue()) > 1)
+      await page.waitForFunction(width => parseFloat(document.querySelector('video').style.width) > width, originalWidth)
+      const before = Number(await page.getByRole('slider', { name: 'Center X' }).inputValue())
+      const box = await page.getByTestId('clip-preview').boundingBox()
+      await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5)
+      await page.mouse.down()
+      await page.mouse.move(box.x + box.width * 0.7, box.y + box.height * 0.5, { steps: 4 })
+      await page.mouse.up()
+      await page.waitForFunction(value => Number(document.querySelector('[aria-label="Center X"]').value) < value, before)
+    }
     await button('Apply framing').click()
     await eventually(() => assert.equal(edits.length, 4))
     assert.equal(edits[3].patch.framing.segments[1].framing.mode, 'manual')
@@ -169,7 +228,7 @@ async function main() {
     await page.getByText('Preview render failed').waitFor()
 
     await button('Retry exact preview').click()
-    await page.waitForSelector('video[src^="blob:"]')
+    await page.getByRole('link', { name: 'Open exact preview' }).waitFor()
     assert.equal(previewRequests.length, 2)
 
     // 409 busy test
@@ -190,7 +249,7 @@ async function main() {
     await page.locator('li').filter({ hasText: 'Clip 2' }).click()
     if (releaseHeldPreview) releaseHeldPreview()
     await page.waitForTimeout(100)
-    assert.equal(await page.locator('video[src^="blob:"]').count(), 0)
+    assert.equal(await page.getByRole('link', { name: 'Open exact preview' }).count(), 0)
 
     // 10. Dirty framing / caption draft blocks preview button
     await page.locator('li').filter({ hasText: 'Clip 1' }).click()
@@ -198,10 +257,24 @@ async function main() {
     await page.getByRole('slider', { name: 'Zoom' }).focus()
     await page.keyboard.press('ArrowRight')
     await page.getByRole('status').filter({ hasText: 'Unsaved framing' }).waitFor()
+    await page.waitForFunction(() => Array.from(document.querySelectorAll('button')).some(el => el.textContent.trim() === 'Render exact preview' && el.disabled))
     assert.equal(await button('Render exact preview').isDisabled(), true)
     await button('Discard framing changes').click()
     await page.waitForFunction(() => Array.from(document.querySelectorAll('button')).some(el => el.textContent.trim() === 'Render exact preview' && !el.disabled))
     assert.equal(await button('Render exact preview').isEnabled(), true)
+
+    // Trim handles are on the same timeline as the slice buttons.
+    const handle = page.getByRole('button', { name: 'Drag start of clip' })
+    const track = page.getByRole('group', { name: 'Framing slices' })
+    assert.equal(await track.count(), 1)
+    const beforeTrim = await handle.boundingBox()
+    const timelineBox = await track.boundingBox()
+    await page.mouse.move(beforeTrim.x + beforeTrim.width / 2, beforeTrim.y + beforeTrim.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(timelineBox.x + timelineBox.width * 0.2, beforeTrim.y + beforeTrim.height / 2, { steps: 5 })
+    await page.mouse.up()
+    await eventually(() => assert.ok(trims.length > 0))
+    assert.ok(trims[0].start_s > 0)
 
     // 11. 375px mobile viewport has no horizontal overflow
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)
