@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 
 import { formatTimecode, type Word } from '../api'
 
@@ -17,6 +17,7 @@ export function TrimBar({
   originalEnd,
   onCommit,
   disabled,
+  children,
 }: {
   words: Word[]
   startS: number
@@ -25,6 +26,7 @@ export function TrimBar({
   originalEnd: number
   onCommit: (start: number, end: number) => void
   disabled: boolean
+  children: ReactNode
 }) {
   const track = useRef<HTMLDivElement>(null)
   const [dragging, setDragging] = useState<'start' | 'end' | null>(null)
@@ -105,7 +107,7 @@ export function TrimBar({
   return (
     <div className="select-none">
       <div className="flex items-baseline justify-between">
-        <span className="eyebrow">Trim</span>
+        <span className="eyebrow">Timeline</span>
         <span className="numeric text-xs text-ink-400">
           {formatTimecode(local.start)} → {formatTimecode(local.end)}
           <span className="ml-3 text-sodium-500">{duration.toFixed(1)}s</span>
@@ -113,22 +115,10 @@ export function TrimBar({
       </div>
 
       <div ref={track} className="relative mt-3 h-14 cursor-ew-resize bg-ink-850">
-        {/* Word density as a crude waveform stand-in: taller where speech is
-            dense, which is enough to aim a cut by. */}
-        <div className="absolute inset-0 flex items-end gap-px overflow-hidden px-px opacity-60">
-          {buildDensity(words, windowStart, windowEnd, 90).map((value, index) => (
-            <div
-              key={index}
-              className="flex-1 bg-ink-700"
-              style={{ height: `${12 + value * 78}%` }}
-            />
-          ))}
-        </div>
-
         <div
-          className="absolute inset-y-0 bg-sodium-700/25"
+          className="absolute inset-y-0"
           style={{ left: `${left * 100}%`, right: `${(1 - right) * 100}%` }}
-        />
+        >{children}</div>
 
         <Handle
           position={left}
@@ -166,25 +156,11 @@ function Handle({
         onGrab()
       }}
       aria-label={`Drag ${edge} of clip`}
-      className="absolute inset-y-0 w-3 -translate-x-1/2 cursor-ew-resize"
+      className="absolute inset-y-0 z-20 w-3 -translate-x-1/2 cursor-ew-resize"
       style={{ left: `${position * 100}%` }}
     >
       <span className="absolute inset-y-0 left-1/2 w-0.5 -translate-x-1/2 bg-sodium-500" />
       <span className="absolute left-1/2 top-1/2 h-6 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-sodium-400" />
     </button>
   )
-}
-
-/** Words per bucket, normalised — a proxy for speech density. */
-function buildDensity(words: Word[], start: number, end: number, buckets: number): number[] {
-  const values = new Array(buckets).fill(0)
-  const span = Math.max(0.1, end - start)
-
-  for (const word of words) {
-    const index = Math.floor(((word.start - start) / span) * buckets)
-    if (index >= 0 && index < buckets) values[index] += 1
-  }
-
-  const peak = Math.max(1, ...values)
-  return values.map((value) => value / peak)
 }

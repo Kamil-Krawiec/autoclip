@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type MouseEvent } from 'react'
 
 import {
   formatTimecode,
@@ -7,8 +7,11 @@ import {
   type ManualFraming,
   type SingleFraming,
   type SlicesFraming,
+  type Word,
 } from '../api'
 import { FramingEditor } from './FramingEditor'
+import { TrimBar } from './TrimBar'
+import type { FramingGeometry, PanRequest } from './ClipPlayer'
 
 const MIN_SLICE_DURATION_S = 0.1
 const MAX_SLICES = 64
@@ -85,12 +88,26 @@ function ensureClipCoverage(
 
 function describeFraming(framing: SingleFraming): string {
   if (framing.mode === 'fit') return 'Fit'
+  if (framing.mode === 'split') return 'Split'
   if (framing.mode === 'manual') return `Manual (${framing.zoom.toFixed(1)}×)`
   return 'Auto'
 }
 
+type VisibleSliceEntry = {
+  index: number
+  slice: FramingSlice
+  relStartS: number
+  relEndS: number
+  visStartS: number
+  visEndS: number
+}
+
+function clamp01(value: number): number {
+  if (!Number.isFinite(value)) return 0
+  return Math.min(1, Math.max(0, value))
+}
+
 export function SliceFramingEditor({
-  src,
   clipId,
   clipStartS,
   clipEndS,
@@ -105,9 +122,12 @@ export function SliceFramingEditor({
   framingDirty,
   onDirtyChange,
   onCommitSlices,
-  onResetToGlobalAuto,
+  onSeek,
+  words,
+  onTrim,
+  onDraftGeometry,
+  panRequest,
 }: {
-  src: string
   clipId: string
   clipStartS: number
   clipEndS: number
@@ -122,7 +142,12 @@ export function SliceFramingEditor({
   framingDirty: boolean
   onDirtyChange: (dirty: boolean) => void
   onCommitSlices: (next: SlicesFraming) => Promise<boolean>
-  onResetToGlobalAuto: () => Promise<boolean>
+  /** Seek the clip player to a source-time position (seconds), e.g. when the user clicks the timeline. */
+  onSeek: (sourceTimeS: number) => void
+  words: Word[]
+  onTrim: (start: number, end: number) => void
+  onDraftGeometry: (geometry: FramingGeometry | null) => void
+  panRequest: PanRequest | null
 }) {
   const segments = useMemo(
     () => ensureClipCoverage(slicesFraming.segments, clipStartS, clipEndS),
@@ -146,7 +171,7 @@ export function SliceFramingEditor({
     })
   }, [clipId, segments, clipStartS, clipEndS])
 
-  const visibleSlices = useMemo(() => {
+  const visibleSlices = useMemo((): VisibleSliceEntry[] => {
     return segments
       .map((slice, index) => {
         const visStart = Math.max(clipStartS, slice.start_s)
@@ -163,6 +188,14 @@ export function SliceFramingEditor({
       })
       .filter((item): item is NonNullable<typeof item> => item !== null)
   }, [segments, clipStartS, clipEndS])
+
+  useEffect(() => {
+    if (disabled || framingDirty) return
+    const current = visibleSlices.find(
+      (entry) => playheadSourceS >= entry.visStartS && playheadSourceS < entry.visEndS,
+    )
+    if (current) setSelectedIndex(current.index)
+  }, [visibleSlices, playheadSourceS, disabled, framingDirty])
 
   const activeEntry =
     visibleSlices.find((v) => v.index === selectedIndex) ?? visibleSlices[0] ?? null
@@ -198,10 +231,24 @@ export function SliceFramingEditor({
     return Boolean(nextVisible)
   }, [activeEntry, visibleSlices])
 
-  const handleSelectSlice = (index: number) => {
-    if (index === activeIndex) return
+  const handleTimelineSliceClick = (
+    entry: VisibleSliceEntry,
+    event: MouseEvent<HTMLButtonElement>,
+  ) => {
     if (disabled || framingDirty) return
-    setSelectedIndex(index)
+    // Selection still applies when re-clicking the selected slice (it re-seeks).
+    setSelectedIndex(entry.index)
+    const visDuration = entry.visEndS - entry.visStartS
+    let clickedSourceS: number
+    if (event.nativeEvent.detail === 0) {
+      // Keyboard activation (Enter/Space) reports no pointer position.
+      clickedSourceS = entry.visStartS
+    } else {
+      const rect = event.currentTarget.getBoundingClientRect()
+      const fraction = rect.width > 0 ? (event.clientX - rect.left) / rect.width : 0
+      clickedSourceS = entry.visStartS + clamp01(fraction) * visDuration
+    }
+    onSeek(Number(clickedSourceS.toFixed(4)))
   }
 
   const handleSplitAtPlayhead = async () => {
@@ -252,14 +299,14 @@ export function SliceFramingEditor({
     await onCommitSlices({ mode: 'slices', segments: nextSegments })
   }
 
-  const handleChangeSelectedMode = async (nextMode: 'auto' | 'fit' | 'manual') => {
+  const handleChangeSelectedMode = async (nextMode: 'auto' | 'fit' | 'manual' | 'split') => {
     if (disabled || framingDirty || !activeSlice) return
     if (activeSlice.framing.mode === nextMode) return
     let nextFraming: SingleFraming
     if (nextMode === 'auto') {
       nextFraming = { mode: 'auto' }
-    } else if (nextMode === 'fit') {
-      nextFraming = { mode: 'fit' }
+    } else if (nextMode === 'fit' || nextMode === 'split') {
+      nextFraming = { mode: nextMode }
     } else {
       nextFraming =
         activeSlice.framing.mode === 'manual' ? activeSlice.framing : { ...DEFAULT_MANUAL }
@@ -323,127 +370,153 @@ export function SliceFramingEditor({
   }, [activeSlice, cropPath, sourceWidth, sourceHeight, clipStartS, ratio])
 
   const playheadRelS = Math.max(0, playheadSourceS - clipStartS)
+  const clipDurationS = Math.max(EPSILON, clipEndS - clipStartS)
+  const playheadPct = clamp01(playheadRelS / clipDurationS) * 100
+  const playheadVisible =
+    playheadRelS >= -EPSILON && playheadRelS <= clipDurationS + EPSILON
 
   return (
     <div
       className="space-y-4 border border-ink-800 bg-ink-900/40 p-3"
       aria-label="Per-slice framing editor"
     >
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <div>
-          <span className="eyebrow">Per-slice framing</span>
-          <p className="mt-0.5 text-xs text-ink-400">
-            Playhead at {formatTimecode(playheadRelS)} · Select a slice or split at the current playhead.
-          </p>
-        </div>
-        <button
-          type="button"
-          disabled={disabled || framingDirty}
-          onClick={() => void onResetToGlobalAuto()}
-          className="btn btn-ghost text-xs"
-        >
-          Reset to global Auto
-        </button>
-      </div>
-
-      <ul className="space-y-1.5" aria-label="Framing slices">
-        {visibleSlices.map((entry, visIdx) => {
-          const isSelected = entry.index === activeIndex
-          return (
-            <li key={`${entry.slice.start_s}-${entry.slice.end_s}-${entry.index}`}>
+      <TrimBar words={words} startS={clipStartS} endS={clipEndS}
+        originalStart={clipStartS} originalEnd={clipEndS} onCommit={onTrim}
+        disabled={disabled || framingDirty}>
+      <div
+        role="group"
+        aria-label="Framing slices"
+        className="relative h-full"
+      >
+        <div className="flex h-full w-full divide-x divide-ink-800 overflow-hidden border border-ink-800 bg-ink-900/60">
+          {visibleSlices.map((entry, visIdx) => {
+            const widthPct =
+              clamp01((entry.visEndS - entry.visStartS) / clipDurationS) * 100
+            const isSelected = entry.index === activeIndex
+            const label = `Slice ${visIdx + 1}: ${formatTimecode(entry.relStartS)} – ${formatTimecode(entry.relEndS)} ${describeFraming(entry.slice.framing)}`
+            return (
               <button
+                key={`${entry.slice.start_s}-${entry.slice.end_s}-${entry.index}`}
                 type="button"
                 aria-pressed={isSelected}
+                aria-label={label}
+                title={label}
+                aria-disabled={disabled || framingDirty}
                 disabled={disabled || framingDirty}
-                onClick={() => handleSelectSlice(entry.index)}
+                onClick={(event) => handleTimelineSliceClick(entry, event)}
                 className={[
-                  'flex w-full items-center justify-between border px-3 py-2 text-left text-xs transition-colors',
+                  'flex min-w-0 items-center justify-center overflow-hidden text-center text-[10px] leading-tight transition-colors',
                   isSelected
-                    ? 'border-sodium-500 bg-ink-850 text-ink-100'
-                    : 'border-ink-800 bg-ink-900/60 text-ink-300 hover:border-ink-700',
+                    ? 'bg-sodium-500/25 text-ink-100 ring-1 ring-inset ring-sodium-500'
+                    : 'bg-ink-900/60 text-ink-300 hover:bg-ink-850/60',
                 ].join(' ')}
+                style={{ width: `${widthPct}%` }}
               >
-                <span className="numeric font-medium">
-                  Slice {visIdx + 1}: {formatTimecode(entry.relStartS)} – {formatTimecode(entry.relEndS)}
+                <span className={widthPct >= 8 ? 'truncate px-0.5' : 'sr-only'}>
+                  {label}
                 </span>
-                <span className="text-sodium-500">{describeFraming(entry.slice.framing)}</span>
               </button>
-            </li>
-          )
-        })}
-      </ul>
+            )
+          })}
+        </div>
+        {playheadVisible && (
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute bottom-0 top-0 z-10 w-0.5"
+            style={{ left: `calc(${playheadPct}% - 1px)` }}
+          >
+            <div className="h-full w-full bg-sodium-500" />
+            <span className="absolute -top-1 left-1/2 block h-2 w-2 -translate-x-1/2 rounded-full bg-sodium-500" />
+          </div>
+        )}
+      </div>
+      </TrimBar>
 
       <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
           disabled={disabled || framingDirty || splitCandidateS === null}
+          aria-label={`Split slice at playhead (${formatTimecode(playheadRelS)})`}
           onClick={() => void handleSplitAtPlayhead()}
           className="btn btn-ghost text-xs"
         >
-          Split slice at playhead ({formatTimecode(playheadRelS)})
+          ✂ Split
         </button>
         <button
           type="button"
           disabled={disabled || framingDirty || !canMergeWithNext}
+          aria-label="Merge with next slice"
           onClick={() => void handleMergeWithNext()}
           className="btn btn-ghost text-xs"
         >
-          Merge with next slice
+          Merge next
         </button>
       </div>
 
       {activeSlice && activeEntry && (
         <div className="space-y-3 border-t border-ink-800 pt-3">
           <p className="text-xs text-ink-300">
-            Selected slice ({formatTimecode(activeEntry.relStartS)} –{' '}
-            {formatTimecode(activeEntry.relEndS)}) mode:
+            Selected: {formatTimecode(activeEntry.relStartS)} – {formatTimecode(activeEntry.relEndS)}
           </p>
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
               disabled={disabled || framingDirty}
+              aria-label="Slice Auto"
               onClick={() => void handleChangeSelectedMode('auto')}
               className={[
                 'btn',
                 activeSlice.framing.mode === 'auto' ? 'btn-primary' : 'btn-ghost',
               ].join(' ')}
             >
-              Slice Auto
+              Auto
             </button>
             <button
               type="button"
               disabled={disabled || framingDirty}
+              aria-label="Slice Fit + blur"
               onClick={() => void handleChangeSelectedMode('fit')}
               className={[
                 'btn',
                 activeSlice.framing.mode === 'fit' ? 'btn-primary' : 'btn-ghost',
               ].join(' ')}
             >
-              Slice Fit + blur
+              Fit + blur
+            </button>
+            <button
+              type="button"
+              disabled={disabled || framingDirty || ratio !== '9:16' || sourceWidth <= sourceHeight || !hasVideoSource}
+              title="Split a landscape source into two stacked halves for 9:16"
+              onClick={() => void handleChangeSelectedMode('split')}
+              className={['btn', activeSlice.framing.mode === 'split' ? 'btn-primary' : 'btn-ghost'].join(' ')}
+            >
+              Split screen
             </button>
             <button
               type="button"
               disabled={disabled || framingDirty || !hasVideoSource}
+              aria-label="Slice Manual"
               onClick={() => void handleChangeSelectedMode('manual')}
               className={[
                 'btn',
                 activeSlice.framing.mode === 'manual' ? 'btn-primary' : 'btn-ghost',
               ].join(' ')}
             >
-              Slice Manual
+              Resize
             </button>
           </div>
 
-          {activeSlice.framing.mode === 'manual' && (
+            {activeSlice.framing.mode === 'manual' && (
             <FramingEditor
               key={`${clipId}:slice:${activeIndex}:${activeEntry.visStartS}`}
-              src={src}
               startS={activeEntry.visStartS}
               framing={activeSlice.framing}
               cropPath={selectedManualSubCropPath}
               disabled={disabled}
               onDirtyChange={onDirtyChange}
               onCommit={handleCommitSelectedManual}
+              onDraftGeometry={onDraftGeometry}
+              panRequest={panRequest}
             />
           )}
         </div>

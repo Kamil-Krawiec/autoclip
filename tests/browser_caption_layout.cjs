@@ -140,6 +140,7 @@ async function main() {
     assert.equal(await slider('Zoom').isDisabled(), true, 'caption layout draft disables manual framing')
     assert.equal(exports.length, 0, 'draft blocks export')
     await button('1:1').click()
+    await page.getByText('Whole clip framing', { exact: true }).click()
     await button('Auto').click()
     await page.getByRole('button', { name: /^wide/ }).click()
     assert.equal(edits.length, 0, 'ratio change is guarded while dirty')

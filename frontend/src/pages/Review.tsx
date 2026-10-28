@@ -19,12 +19,10 @@ import {
 } from '../api'
 import { CaptionEditor } from '../components/CaptionEditor'
 import { CaptionLayoutEditor } from '../components/CaptionLayoutEditor'
-import { ClipPlayer } from '../components/ClipPlayer'
+import { ClipPlayer, type FramingGeometry, type PanRequest } from '../components/ClipPlayer'
 import { ErrorNote } from '../components/ErrorNote'
 import { ExactPreview } from '../components/ExactPreview'
-import { FramingEditor } from '../components/FramingEditor'
 import { SliceFramingEditor } from '../components/SliceFramingEditor'
-import { TrimBar } from '../components/TrimBar'
 
 const RATIOS = ['9:16', '1:1', '16:9'] as const
 
@@ -50,6 +48,9 @@ export function Review() {
   const [words, setWords] = useState<Word[]>([])
   const [cropPath, setCropPath] = useState<CropPath | null>(null)
   const [playheadSourceS, setPlayheadSourceS] = useState<number>(0)
+  const [seekRequest, setSeekRequest] = useState<{ time: number; id: number } | null>(null)
+  const [draftGeometry, setDraftGeometry] = useState<FramingGeometry | null>(null)
+  const [panRequest, setPanRequest] = useState<PanRequest | null>(null)
   const [wordsDirty, setWordsDirty] = useState(false)
   const [framingDirty, setFramingDirty] = useState(false)
   const [captionLayoutDirty, setCaptionLayoutDirty] = useState(false)
@@ -88,6 +89,18 @@ export function Review() {
   const selectedFramingKey = canonicalFramingKey(selectedFraming)
   const selectedManualFraming = selectedFraming?.mode === 'manual' ? selectedFraming : null
   const selectedSlicesFraming = selectedFraming?.mode === 'slices' ? selectedFraming : null
+  const timelineFraming = useMemo((): SlicesFraming | null => selected
+    ? selectedSlicesFraming ?? {
+        mode: 'slices',
+        segments: [{
+          start_s: selected.start_s,
+          end_s: selected.end_s,
+          framing: selectedFraming?.mode === 'manual' || selectedFraming?.mode === 'fit' || selectedFraming?.mode === 'split'
+            ? selectedFraming
+            : { mode: 'auto' },
+        }],
+      }
+    : null, [selected, selectedSlicesFraming, selectedFraming])
   const selectedStartS = selected?.start_s ?? null
   const selectedEndS = selected?.end_s ?? null
 
@@ -278,6 +291,10 @@ export function Review() {
       setDirtyBlockedMessage('Save caption changes before saving slice framing.')
       return false
     }
+    if (clip.framing?.mode !== 'slices' && nextSlices.segments.length === 1) {
+      const framing = nextSlices.segments[0].framing
+      return updateClipEdit(clip, { framing: framing.mode === 'auto' ? null : framing })
+    }
     return updateClipEdit(clip, { framing: nextSlices })
   }
 
@@ -285,8 +302,8 @@ export function Review() {
     if (guardDirtyCaptions('enabling per-slice framing')) return false
     if (clip.framing?.mode === 'slices') return true
     let initialFraming: SingleFraming = { mode: 'auto' }
-    if (clip.framing?.mode === 'fit') {
-      initialFraming = { mode: 'fit' }
+    if (clip.framing?.mode === 'fit' || clip.framing?.mode === 'split') {
+      initialFraming = { mode: clip.framing.mode }
     } else if (clip.framing?.mode === 'manual') {
       initialFraming = { ...clip.framing }
     }
@@ -428,7 +445,7 @@ export function Review() {
       {clips.length === 0 ? (
         <EmptyState />
       ) : (
-        <div className="mt-8 grid gap-x-10 gap-y-10 lg:grid-cols-[minmax(0,20rem)_minmax(0,26rem)_minmax(0,1fr)]">
+        <div className="mt-8 grid gap-x-6 gap-y-8 xl:grid-cols-[minmax(0,14rem)_minmax(0,1fr)_minmax(0,20rem)]">
           {/* Ranked list */}
           <section className="lg:max-h-[76vh] lg:overflow-y-auto lg:pr-1">
             <p className="eyebrow border-b border-ink-800 pb-2">Ranked</p>
@@ -468,36 +485,23 @@ export function Review() {
                   burnCaptions={burnCaptions}
                   captionOverrides={selected.caption_overrides}
                   onPlayheadChange={setPlayheadSourceS}
+                  seekRequest={seekRequest}
+                  draftGeometry={draftGeometry}
+                  onPan={(dx, dy) => setPanRequest((previous) => ({ dx, dy, id: (previous?.id ?? 0) + 1 }))}
                 />
-                {selectedManualFraming && (
-                  <FramingEditor
-                    key={selected.id}
-                    src={api.mediaUrl(jobId)}
-                    startS={selected.start_s}
-                    framing={selectedManualFraming}
-                    cropPath={cropPath}
-                    disabled={controlsLocked || captionLayoutDirty}
-                    onDirtyChange={(dirty) => {
-                      if (selectedIdRef.current !== selected.id) return
-                      setFramingDirty(dirty)
-                      if (!dirty) setDirtyBlockedMessage(null)
-                    }}
-                    onCommit={(nextFraming) => updateClipEdit(selected, { framing: nextFraming })}
-                  />
-                )}
-                {selectedSlicesFraming && (
+                {timelineFraming && (
                   <SliceFramingEditor
-                    src={api.mediaUrl(jobId)}
                     clipId={selected.id}
                     clipStartS={selected.start_s}
                     clipEndS={selected.end_s}
                     ratio={selected.ratio}
-                    slicesFraming={selectedSlicesFraming}
+                    slicesFraming={timelineFraming}
                     cropPath={cropPath}
                     sourceWidth={job.source?.width ?? cropPath?.source_width ?? 0}
                     sourceHeight={job.source?.height ?? cropPath?.source_height ?? 0}
                     hasVideoSource={hasVideoSource}
                     playheadSourceS={playheadSourceS}
+                    onSeek={(time) => setSeekRequest((previous) => ({ time, id: (previous?.id ?? 0) + 1 }))}
                     disabled={controlsLocked || captionLayoutDirty || wordsDirty}
                     framingDirty={framingDirty}
                     onDirtyChange={(dirty) => {
@@ -506,18 +510,12 @@ export function Review() {
                       if (!dirty) setDirtyBlockedMessage(null)
                     }}
                     onCommitSlices={(nextSlices) => commitSlicesFraming(selected, nextSlices)}
-                    onResetToGlobalAuto={() => setFraming(selected, null)}
+                    words={words}
+                    onTrim={commitTrim}
+                    onDraftGeometry={setDraftGeometry}
+                    panRequest={panRequest}
                   />
                 )}
-                <TrimBar
-                  words={words}
-                  startS={selected.start_s}
-                  endS={selected.end_s}
-                  originalStart={selected.start_s}
-                  originalEnd={selected.end_s}
-                  onCommit={commitTrim}
-                  disabled={controlsLocked || wordsDirty || framingDirty || captionLayoutDirty}
-                />
                 <ExactPreview
                   clip={selected}
                   playheadSourceS={playheadSourceS}
@@ -643,8 +641,8 @@ export function Review() {
                   </div>
                 </div>
 
-                <div>
-                  <p className="eyebrow border-b border-ink-800 pb-2">Framing</p>
+                <details className="border-t border-ink-800 pt-4">
+                  <summary className="cursor-pointer text-xs uppercase tracking-wider text-ink-400">Whole clip framing</summary>
                   <div className="mt-3 flex flex-wrap gap-2">
                     <button
                       type="button"
@@ -701,7 +699,7 @@ export function Review() {
                       Per-slice framing is active. Choosing Auto, Fit, or Manual above replaces all slices for this clip.
                     </p>
                   )}
-                </div>
+                </details>
 
                 <div className="border-t border-ink-800 pt-6">
                   <button

@@ -72,6 +72,7 @@ class CropSegment:
     #: wider than any crop of the target ratio can hold — cropping there would
     #: cut someone out of frame, which the acceptance bar forbids.
     fit: bool = False
+    split: bool = False
 
     @property
     def duration_s(self) -> float:
@@ -123,6 +124,7 @@ class CropPath:
                     strategy=Strategy(raw.get("strategy", "general")),
                     zoom=raw.get("zoom", 0.0),
                     fit=raw.get("fit", False),
+                    split=raw.get("split", False),
                 )
             )
         return cls(
