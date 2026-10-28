@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useBeforeUnload, useBlocker, useNavigate, useParams } from 'react-router-dom'
 
 import {
   api,
@@ -40,9 +40,11 @@ function canonicalFramingKey(framing: ClipFraming | undefined): string {
 }
 
 export function Review() {
-  const { jobId } = useParams()
+  const { jobId, clipId } = useParams()
+  const navigate = useNavigate()
   const [job, setJob] = useState<Job | null>(null)
   const [clips, setClips] = useState<Clip[]>([])
+  const [clipsLoaded, setClipsLoaded] = useState(false)
   const [styles, setStyles] = useState<CaptionStyle[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [words, setWords] = useState<Word[]>([])
@@ -68,15 +70,23 @@ export function Review() {
 
   useEffect(() => {
     if (!jobId) return
+    setClipsLoaded(false)
     void Promise.all([api.getJob(jobId), api.listClips(jobId), api.captionStyles()])
       .then(([loadedJob, loadedClips, loadedStyles]) => {
         setJob(loadedJob)
         setClips(loadedClips)
         setStyles(loadedStyles)
-        setSelectedId((current) => current ?? loadedClips[0]?.id ?? null)
+        setSelectedId(clipId ?? loadedClips[0]?.id ?? null)
+        setClipsLoaded(true)
       })
       .catch((err) => setError(err as Error))
   }, [jobId])
+
+  useEffect(() => {
+    if (clipId && clips.some((clip) => clip.id === clipId)) {
+      setSelectedId(clipId)
+    }
+  }, [clipId, clips, clipsLoaded, jobId, navigate])
 
   const selected = useMemo(
     () => clips.find((clip) => clip.id === selectedId) ?? null,
@@ -199,7 +209,7 @@ export function Review() {
     if (editsPending || exportLock.current) return
     if (guardDirtyCaptions('switching clips')) return
     setDirtyBlockedMessage(null)
-    setSelectedId(clipId)
+    navigate(`/jobs/${jobId}/clips/${clipId}`)
   }
 
   const setStatus = async (clip: Clip, status: Clip['status']) => {
@@ -376,6 +386,12 @@ export function Review() {
       })
     : ''
   const hasUnsavedDrafts = wordsDirty || framingDirty || captionLayoutDirty
+  const blocker = useBlocker(hasUnsavedDrafts || editsPending || exportPending)
+  useBeforeUnload((event) => {
+    if (!hasUnsavedDrafts && !editsPending && !exportPending) return
+    event.preventDefault()
+    event.returnValue = ''
+  })
   const previewDisabled = controlsLocked || hasUnsavedDrafts
   const previewDisabledReason = hasUnsavedDrafts
     ? 'Save or discard unsaved caption, layout, or framing changes before rendering an exact preview.'
@@ -389,14 +405,25 @@ export function Review() {
     )
   }
 
+  if (clipId && clipsLoaded && !clips.some((clip) => clip.id === clipId) && job) {
+    return (
+      <div className="max-w-2xl pt-16">
+        <p className="eyebrow">Clip unavailable</p>
+        <h1 className="mt-2 font-display text-3xl text-ink-100">Clip not found</h1>
+        <p className="mt-3 text-sm text-ink-300">This clip does not belong to this job or no longer exists.</p>
+        <Link className="btn btn-ghost mt-6" to={`/jobs/${jobId}/clips`}>Back to results</Link>
+      </div>
+    )
+  }
+
   if (!job) return <p className="pt-24 text-sm text-ink-500">Loading…</p>
 
   return (
     <div className="pt-10">
       <div className="flex flex-wrap items-baseline justify-between gap-4 border-b border-ink-800 pb-5">
         <div className="min-w-0">
-          <Link to="/" className="eyebrow transition-colors hover:text-sodium-500">
-            ← All jobs
+          <Link to={`/jobs/${jobId}/clips`} className="eyebrow transition-colors hover:text-sodium-500">
+            ← Results
           </Link>
           <h1 className="mt-2 max-w-2xl truncate font-display text-[clamp(1.5rem,3vw,2.25rem)] leading-tight text-ink-100">
             {job.source?.title || 'Untitled'}
@@ -426,6 +453,14 @@ export function Review() {
       {error && (
         <div className="mt-6 max-w-3xl">
           <ErrorNote error={error} onDismiss={() => setError(null)} />
+        </div>
+      )}
+
+      {blocker.state === 'blocked' && (
+        <div role="alert" className="mt-4 flex flex-wrap items-center gap-3 border-l-2 border-sodium-500 bg-ink-850 p-3 text-sm text-ink-100">
+          <span>{editsPending || exportPending ? 'Wait for the current save or export to finish before leaving.' : 'Unsaved edits will be lost if you leave this clip.'}</span>
+          <button className="btn btn-ghost" onClick={() => blocker.reset()}>Stay</button>
+          {!editsPending && !exportPending && <button className="btn btn-primary" onClick={() => blocker.proceed()}>Leave without saving</button>}
         </div>
       )}
 

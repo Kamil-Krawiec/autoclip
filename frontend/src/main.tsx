@@ -7,6 +7,7 @@ import './index.css'
 import { Ingest } from './pages/Ingest'
 import { JobProgress } from './pages/JobProgress'
 import { Review } from './pages/Review'
+import { ResultsPage } from './pages/ResultsPage'
 import { Settings } from './pages/Settings'
 
 const router = createBrowserRouter([
@@ -16,7 +17,8 @@ const router = createBrowserRouter([
     children: [
       { index: true, element: <Ingest /> },
       { path: 'jobs/:jobId', element: <JobProgress /> },
-      { path: 'jobs/:jobId/clips', element: <Review /> },
+      { path: 'jobs/:jobId/clips', element: <ResultsPage /> },
+      { path: 'jobs/:jobId/clips/:clipId', element: <Review /> },
       { path: 'settings', element: <Settings /> },
     ],
   },
