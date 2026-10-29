@@ -101,6 +101,7 @@ async function main() {
     await page.getByRole('button', { name: 'Edit' }).first().click()
     await page.waitForURL('**/jobs/job/clips/a')
     await page.getByRole('heading', { name: 'Synthetic source' }).waitFor()
+    await page.getByRole('button', { name: 'Transcript', exact: true }).click()
     await page.getByRole('button', { name: 'hello' }).click()
     await page.getByRole('textbox').fill('edited')
     await page.getByRole('textbox').press('Enter')

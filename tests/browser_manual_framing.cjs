@@ -46,8 +46,11 @@ async function main() {
     const range = name => page.getByRole('slider', {name, exact:true})
     const getClip = async id => (await context.request.get(`/api/clips/${id}`)).json()
     await page.goto('/jobs/manual-job/clips/manual-a')
+    await button('Transcript').click()
     await button('Pierwszy').waitFor()
+    await page.locator('summary', { hasText: 'Clips · 2' }).click()
     await button('Slice Manual').click()
+    await button('Framing').click()
     await page.getByText('Fine position', {exact:true}).click()
     await range('Zoom').waitFor()
     await eventually(async()=>assert.equal(await range('Zoom').isEnabled(),true))
@@ -71,7 +74,9 @@ async function main() {
     await eventually(async()=>assert.equal(await button('Apply framing').isEnabled(),true))
     count=patches.length
     await page.getByRole('button',{name:/Clip B/}).first().click()
+    await button('Transcript').click()
     await button('Pierwszy').waitFor()
+    await button('Framing').click()
     await page.getByText('Whole clip framing', {exact:true}).click()
     for(const name of ['1:1','16:9','Auto','Fit + blurred background']) await button(name).click()
     for(const name of ['Export kept','Export this clip','Drag start of clip']) assert.equal(await button(name).isDisabled(),true)
@@ -109,19 +114,37 @@ async function main() {
     releaseEdit(); mode='real'
     await eventually(async()=>assert.equal(await range('Zoom').isEnabled(),true))
     // Native touch events exercise touch-action and pointer capture, including vertical movement.
-    await stage.scrollIntoViewIfNeeded(); box=await stage.boundingBox()
+    await stage.evaluate(el=>el.scrollIntoView({block:'center',behavior:'instant'}))
+    await page.evaluate(()=>new Promise((resolve,reject)=>{
+      let previous=scrollY, stable=0, frames=0
+      const sample=()=>{
+        const current=scrollY
+        stable=current===previous?stable+1:0
+        previous=current
+        if(stable>=4) return resolve()
+        if(++frames>120) return reject(new Error('Page scroll did not settle before touch drag'))
+        requestAnimationFrame(sample)
+      }
+      requestAnimationFrame(sample)
+    }))
+    box=await stage.boundingBox()
     assert.equal(await stage.evaluate(el=>getComputedStyle(el).touchAction),'none')
     const cdp=await context.newCDPSession(page)
     count=patches.length
     const scroll=await page.evaluate(()=>scrollY)
+    const assertNoTouchScroll=async()=>assert.equal(await page.evaluate(()=>scrollY),scroll)
     await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:box.x+box.width*.5,y:box.y+box.height*.5}]})
-    for(const frac of [.45,.35,.25]) await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:box.x+box.width*frac,y:box.y+box.height*.7}]})
+    await assertNoTouchScroll()
+    for(const frac of [.45,.35,.25]) {
+      await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:box.x+box.width*frac,y:box.y+box.height*.7}]})
+      await assertNoTouchScroll()
+    }
     assert.equal(patches.length,count)
     await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]})
+    await assertNoTouchScroll()
     await button('Apply framing').click()
     await eventually(()=>assert.equal(patches.length,count+1))
     await eventually(async()=>assert.equal(await range('Zoom').isEnabled(),true))
-    assert.equal(await page.evaluate(()=>scrollY),scroll)
     assert.ok((await getClip('manual-a')).framing.center_x>saved.framing.center_x)
     await button('Export this clip').click()
     await eventually(()=>assert.equal(typeof releaseExport,'function'))
@@ -132,9 +155,11 @@ async function main() {
     assert.equal(a.caption_style,'clean_lower'); assert.equal(a.burn_captions,true)
     assert.deepEqual(await (await context.request.get('/api/clips/manual-a/words')).json(),[{text:'Pierwszy',start:0,end:2.9,speaker:null}])
     assert.equal(b.framing,null)
-    await page.getByRole('button',{name:/Clip B/}).first().click(); await button('Drugi').waitFor()
+    await page.locator('summary', { hasText: 'Clips · 2' }).click()
+    await page.getByRole('button',{name:/Clip B/}).first().click(); await button('Transcript').click(); await button('Drugi').waitFor()
     assert.equal(await range('Zoom').count(),0)
     await page.getByRole('button',{name:/Clip A/}).first().click()
+    await button('Framing').click()
     await eventually(async()=>assert.equal(await range('Zoom').isEnabled(),true))
     assert.deepEqual(errors,[])
     await page.screenshot({path:'/tmp/autoclip-manual-browser.png',fullPage:true})
