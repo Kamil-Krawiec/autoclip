@@ -4,7 +4,7 @@ Migrations are driven by SQLite's ``user_version`` pragma: each entry in
 :data:`MIGRATIONS` moves the database forward one version. Applying them is
 idempotent, so :func:`migrate` runs safely on every startup.
 
-We use raw ``sqlite3`` rather than an ORM. The schema is six small tables read
+We use raw ``sqlite3`` rather than an ORM. The schema is seven small tables read
 by one local process, so an ORM would add a dependency and a layer of
 indirection without buying anything.
 """
@@ -120,6 +120,49 @@ def _migration_v4(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE clip_edits ADD COLUMN caption_overrides_json TEXT")
 
 
+def _migration_v5(conn: sqlite3.Connection) -> None:
+    """One row per publishable export (the YouTube Publish page).
+
+    ``export_id`` is UNIQUE: a rendered export has exactly one publication, so
+    creating it twice is idempotent. Publishing that export again would need a
+    new export (or a future explicit re-publish feature).
+
+    ``updated_at`` doubles as the cache-busting version for thumbnail URLs, and
+    ``youtube_video_id`` is persisted immediately after a successful insert so a
+    retry cannot upload the same file twice.
+    """
+    conn.executescript(
+        """
+        CREATE TABLE publications (
+            id                  TEXT PRIMARY KEY,
+            export_id           TEXT NOT NULL UNIQUE REFERENCES exports(id) ON DELETE CASCADE,
+            clip_id             TEXT NOT NULL REFERENCES clips(id) ON DELETE CASCADE,
+            status              TEXT NOT NULL DEFAULT 'draft'
+                                CHECK (status IN (
+                                    'draft','ready','uploading','published','failed'
+                                )),
+            title               TEXT NOT NULL DEFAULT '',
+            description         TEXT NOT NULL DEFAULT '',
+            tags_json           TEXT NOT NULL DEFAULT '[]',
+            thumbnail_prompt    TEXT NOT NULL DEFAULT '',
+            thumbnail_path      TEXT,
+            thumbnail_wide_path TEXT,
+            final_path          TEXT,
+            best_day            TEXT,
+            privacy_status      TEXT NOT NULL DEFAULT 'private'
+                                CHECK (privacy_status IN ('private','unlisted','public')),
+            youtube_video_id    TEXT,
+            youtube_url         TEXT,
+            error               TEXT,
+            created_at          TEXT NOT NULL,
+            updated_at          TEXT NOT NULL,
+            uploaded_at         TEXT
+        );
+        CREATE INDEX idx_publications_status ON publications(status);
+        """
+    )
+
+
 #: Ordered migrations. Index + 1 is the resulting ``user_version``.
 #: Append only — never edit a migration that has shipped.
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
@@ -127,6 +170,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migration_v2,
     _migration_v3,
     _migration_v4,
+    _migration_v5,
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

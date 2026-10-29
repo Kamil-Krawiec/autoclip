@@ -17,6 +17,8 @@ from typing import Any, Literal, TypedDict
 SourceType = Literal["youtube", "upload"]
 JobStatus = Literal["queued", "running", "failed", "done", "cancelled"]
 ClipStatus = Literal["candidate", "kept", "discarded", "exported"]
+PublicationStatus = Literal["draft", "ready", "uploading", "published", "failed"]
+PrivacyStatus = Literal["private", "unlisted", "public"]
 
 
 def new_id() -> str:
@@ -238,3 +240,78 @@ class Export:
             size_bytes=row["size_bytes"],
             created_at=row["created_at"],
         )
+
+
+@dataclass
+class Publication:
+    """A draft YouTube upload for one rendered export.
+
+    The row is the durable home of the publishing workflow: metadata the user
+    edited, the prompt that produced the current thumbnail, and the upload
+    state all survive navigation and restarts. Files under ``publish/<id>/``
+    hold the artifacts; the original export is never modified.
+    """
+
+    id: str
+    export_id: str
+    clip_id: str
+    status: PublicationStatus = "draft"
+    title: str = ""
+    description: str = ""
+    tags: list[str] = field(default_factory=list)
+    thumbnail_prompt: str = ""
+    thumbnail_path: str | None = None
+    thumbnail_wide_path: str | None = None
+    final_path: str | None = None
+    best_day: str | None = None
+    privacy_status: PrivacyStatus = "private"
+    youtube_video_id: str | None = None
+    youtube_url: str | None = None
+    error: str | None = None
+    created_at: str = field(default_factory=utcnow)
+    updated_at: str = field(default_factory=utcnow)
+    uploaded_at: str | None = None
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> Publication:
+        return cls(
+            id=row["id"],
+            export_id=row["export_id"],
+            clip_id=row["clip_id"],
+            status=row["status"],
+            title=row["title"],
+            description=row["description"],
+            tags=json.loads(row["tags_json"] or "[]"),
+            thumbnail_prompt=row["thumbnail_prompt"],
+            thumbnail_path=row["thumbnail_path"],
+            thumbnail_wide_path=row["thumbnail_wide_path"],
+            final_path=row["final_path"],
+            best_day=row["best_day"],
+            privacy_status=row["privacy_status"],
+            youtube_video_id=row["youtube_video_id"],
+            youtube_url=row["youtube_url"],
+            error=row["error"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            uploaded_at=row["uploaded_at"],
+        )
+
+
+@dataclass
+class PublishCandidate:
+    """A rendered export offered on the Publish page, joined with its context.
+
+    Not a table: it is the shape of the "ready to publish" list query.
+    """
+
+    export_id: str
+    clip_id: str
+    job_id: str
+    source_title: str
+    clip_title: str
+    duration_s: float
+    ratio: str
+    size_bytes: int
+    export_created_at: str
+    publication_id: str | None = None
+    publication_status: str | None = None

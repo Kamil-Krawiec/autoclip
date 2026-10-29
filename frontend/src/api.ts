@@ -200,6 +200,72 @@ export interface ProviderStatus {
   has_key: boolean
 }
 
+export type PublicationStatus = 'draft' | 'ready' | 'uploading' | 'published' | 'failed'
+export type PrivacyStatus = 'private' | 'unlisted' | 'public'
+
+export interface PublishStatus {
+  youtube_client_secret_present: boolean
+  youtube_token_present: boolean
+  youtube_ready: boolean
+  openai_image_key_present: boolean
+  metadata_provider: string
+  metadata_model: string
+  metadata_key_present: boolean
+  image_model: string
+}
+
+export interface PublishCandidate {
+  export_id: string
+  clip_id: string
+  job_id: string
+  source_title: string
+  clip_title: string
+  duration_s: number
+  ratio: string
+  size_bytes: number
+  export_created_at: string
+  download_url: string
+  available: boolean
+  publication_id: string | null
+  publication_status: PublicationStatus | null
+}
+
+export interface Publication {
+  id: string
+  export_id: string
+  clip_id: string
+  job_id: string
+  source_title: string
+  clip_title: string
+  duration_s: number
+  ratio: string
+  export_created_at: string
+  status: PublicationStatus
+  title: string
+  description: string
+  tags: string[]
+  best_day: string | null
+  thumbnail_prompt: string
+  thumbnail_url: string | null
+  thumbnail_wide_url: string | null
+  privacy_status: PrivacyStatus
+  youtube_video_id: string | null
+  youtube_url: string | null
+  error: string | null
+  ready_to_upload: boolean
+  created_at: string
+  updated_at: string
+  uploaded_at: string | null
+}
+
+export interface PublicationPatch {
+  title?: string
+  description?: string
+  tags?: string[]
+  thumbnail_prompt?: string
+  privacy_status?: PrivacyStatus
+}
+
 export interface Settings {
   active_provider: string
   providers: Record<string, { model: string; base_url: string | null }>
@@ -217,6 +283,17 @@ export interface Settings {
     prefer_hardware_encoder: boolean
     crf: number
     write_srt: boolean
+  }
+  publish: {
+    metadata_provider: string
+    metadata_model: string
+    image_provider: string
+    image_model: string
+    image_size: string
+    image_quality: string
+    category_id: string
+    default_privacy: string
+    tcap_duration_s: number
   }
   insecure_secret_storage: boolean
   keys_present: Record<string, boolean>
@@ -529,6 +606,32 @@ export const api = {
 
   captionStyles: () => request<CaptionStyle[]>('/api/caption-styles'),
   providerStatus: () => request<ProviderStatus[]>('/api/providers/status'),
+
+  publishStatus: () => request<PublishStatus>('/api/publish/status'),
+  publishCandidates: (limit = 50, ratio = '9:16') =>
+    request<PublishCandidate[]>(
+      `/api/publish/candidates?limit=${limit}&ratio=${encodeURIComponent(ratio)}`,
+    ),
+  createPublication: (exportId: string) =>
+    request<Publication>('/api/publish', {
+      method: 'POST',
+      body: JSON.stringify({ export_id: exportId }),
+    }),
+  getPublication: (id: string) => request<Publication>(`/api/publish/${id}`),
+  patchPublication: (id: string, patch: PublicationPatch) =>
+    request<Publication>(`/api/publish/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
+  generatePublicationMetadata: (id: string) =>
+    request<Publication>(`/api/publish/${id}/metadata`, { method: 'POST' }),
+  generatePublicationThumbnail: (id: string, prompt?: string) =>
+    request<Publication>(`/api/publish/${id}/thumbnail`, {
+      method: 'POST',
+      body: JSON.stringify(prompt === undefined ? {} : { prompt }),
+    }),
+  uploadPublication: (id: string) =>
+    request<Publication>(`/api/publish/${id}/upload`, { method: 'POST' }),
 
   getSettings: () => request<Settings>('/api/settings'),
   putSettings: (patch: Partial<Settings>) =>

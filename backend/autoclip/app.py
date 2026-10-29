@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import __version__, db, paths
 from .api import api_router
+from .db import store
 from .jobs.events import broker
 from .jobs.queue import queue
 
@@ -48,6 +49,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     paths.ensure_layout()
     db.init()
+
+    # An upload is owned by an asyncio task, so a restart strands the row in
+    # "uploading" and the UI would poll it forever. Mark it failed; retrying
+    # reuses any persisted youtube_video_id and does not upload twice.
+    interrupted = store.fail_interrupted_publications()
+    if interrupted:
+        log.warning("Marked %d interrupted publication upload(s) as failed.", interrupted)
 
     broker.bind_loop(asyncio.get_running_loop())
 

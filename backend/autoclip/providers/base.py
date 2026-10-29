@@ -25,13 +25,16 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 log = logging.getLogger(__name__)
 
 PROMPT_DIR = Path(__file__).resolve().parent.parent / "prompts"
+
+#: A Pydantic model that a provider can fill from one JSON reply.
+SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
 
 class ProviderError(RuntimeError):
@@ -210,6 +213,47 @@ class LLMProvider(ABC):
             cleaned.append(candidate)
 
         return ClipCandidates(clips=cleaned)
+
+    async def complete_json(
+        self,
+        system: str,
+        user: str,
+        schema: type[SchemaT],
+        *,
+        config: DetectionConfig | None = None,
+    ) -> SchemaT:
+        """Run one JSON-mode completion and validate it against ``schema``.
+
+        This is the metadata-generation sibling of :meth:`detect_highlights`:
+        same "validate, then retry with the error" loop, but for an arbitrary
+        Pydantic contract. ``config`` only carries the sampling temperature; the
+        publish prompt owns its own system/user text.
+        """
+        cfg = config or DetectionConfig()
+        raw = await self._complete(system, user, cfg)
+        try:
+            return schema.model_validate(extract_json_object(raw))
+        except (ValidationError, ValueError) as first_error:
+            log.warning("%s returned invalid JSON; retrying with feedback.", self.name)
+            repair = (
+                f"{user}\n\n"
+                "Your previous response did not match the required schema.\n"
+                f"Validation error:\n{first_error}\n\n"
+                "Respond again with ONLY the corrected JSON object. No prose, no "
+                "markdown fences."
+            )
+            raw = await self._complete(system, repair, cfg)
+            try:
+                return schema.model_validate(extract_json_object(raw))
+            except (ValidationError, ValueError) as second_error:
+                raise ProviderError(
+                    f"{self.name} returned malformed metadata twice.",
+                    provider=self.name,
+                    hint=(
+                        f"Last validation error: {second_error}\n\n"
+                        "Check the configured metadata model and try again."
+                    ),
+                ) from second_error
 
 
 # --------------------------------------------------------------------------

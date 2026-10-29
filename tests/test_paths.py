@@ -95,8 +95,24 @@ class TestLegacyHomeAdoption:
 def test_ensure_layout_creates_the_tree(autoclip_home: Path) -> None:
     paths.ensure_layout()
 
-    for directory in (paths.media_dir(), paths.work_dir(), paths.exports_dir()):
+    for directory in (
+        paths.media_dir(),
+        paths.work_dir(),
+        paths.exports_dir(),
+        paths.publish_root(),
+        paths.secrets_dir(),
+    ):
         assert directory.is_dir()
+
+
+def test_publish_artifacts_are_namespaced_by_publication(autoclip_home: Path) -> None:
+    paths.ensure_layout()
+
+    directory = paths.publish_dir("pub123")
+
+    assert directory.name == "pub123"
+    assert directory.parent == paths.publish_root()
+    assert paths.root() in directory.parents
 
 
 def test_ensure_layout_is_idempotent(autoclip_home: Path) -> None:

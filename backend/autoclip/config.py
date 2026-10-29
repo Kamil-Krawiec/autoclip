@@ -18,11 +18,12 @@ import contextlib
 import json
 import logging
 import os
+import re
 import stat
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, Field, PrivateAttr, field_validator
 
 from . import paths
 
@@ -41,6 +42,12 @@ KEYED_PROVIDERS: tuple[str, ...] = ("anthropic", "openai", "gemini")
 
 #: Extra secrets that aren't tied to a provider.
 HF_TOKEN_KEY = "huggingface_token"
+
+#: OpenAI Images key, deliberately separate from the ``openai`` LLM key.
+#: Thumbnails always use the Images API; the separate name stops a key meant
+#: for OpenRouter/DeepSeek from being sent to OpenAI. It is not an LLM provider,
+#: so it is not in :data:`KEYED_PROVIDERS`.
+OPENAI_IMAGE_KEY = "openai_image"
 
 
 class ProviderSettings(BaseModel):
@@ -94,6 +101,41 @@ class ExportSettings(BaseModel):
     write_srt: bool = False
 
 
+class PublishSettings(BaseModel):
+    """Settings for the optional YouTube Publish flow.
+
+    Metadata generation is deliberately independent of clip selection: it
+    defaults to OpenAI and the newest text model, while ``metadata_provider=""``
+    follows the active provider. The image key is separate from the LLM key.
+    """
+
+    #: "" means "use :attr:`Settings.active_provider`".
+    metadata_provider: str = "openai"
+    #: "" means "use the selected provider's configured model".
+    metadata_model: str = "gpt-6-luna"
+    image_provider: Literal["openai"] = "openai"
+    image_model: str = "gpt-image-2.5-flare"
+    image_size: str = "1080x1920"
+    image_quality: Literal["low", "medium", "high"] = "high"
+    category_id: str = "28"
+    default_privacy: Literal["private", "unlisted", "public"] = "private"
+    tcap_duration_s: float = 0.15
+
+    @field_validator("image_size")
+    @classmethod
+    def _check_image_size(cls, value: str) -> str:
+        if not re.fullmatch(r"\d{2,4}x\d{2,4}", value.strip()):
+            raise ValueError("image_size must look like WIDTHxHEIGHT, for example 1080x1920.")
+        return value.strip()
+
+    @field_validator("tcap_duration_s")
+    @classmethod
+    def _check_tcap_duration(cls, value: float) -> float:
+        if not 0.05 <= value <= 1.0:
+            raise ValueError("tcap_duration_s must be between 0.05 and 1.0 seconds.")
+        return value
+
+
 class Settings(BaseModel):
     """Top-level persisted settings."""
 
@@ -110,6 +152,7 @@ class Settings(BaseModel):
     clips: ClipSettings = Field(default_factory=ClipSettings)
     ingest: IngestSettings = Field(default_factory=IngestSettings)
     export: ExportSettings = Field(default_factory=ExportSettings)
+    publish: PublishSettings = Field(default_factory=PublishSettings)
 
     #: Set when secrets had to be written to config.json because no keyring
     #: backend was usable. Surfaced as a warning in the UI and in `doctor`.
@@ -195,7 +238,8 @@ def _keyring():
 def get_secret(key: str, settings: Settings | None = None) -> str | None:
     """Return a stored secret, or None if unset.
 
-    ``key`` is a provider name for API keys, or :data:`HF_TOKEN_KEY`.
+    ``key`` is a provider name for API keys, :data:`HF_TOKEN_KEY`, or
+    :data:`OPENAI_IMAGE_KEY` for the separate Images key.
     """
     env_override = os.environ.get(f"AUTOCLIP_{key.upper()}_KEY")
     if env_override:
