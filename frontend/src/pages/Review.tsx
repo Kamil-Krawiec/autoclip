@@ -25,6 +25,7 @@ import { ExactPreview } from '../components/ExactPreview'
 import { SliceFramingEditor } from '../components/SliceFramingEditor'
 
 const RATIOS = ['9:16', '1:1', '16:9'] as const
+type EditorPanel = 'captions' | 'framing' | 'transcript'
 
 function canonicalCaptionOverridesKey(overrides: CaptionOverrides | null | undefined): string {
   if (!overrides) return 'null'
@@ -47,6 +48,7 @@ export function Review() {
   const [clipsLoaded, setClipsLoaded] = useState(false)
   const [styles, setStyles] = useState<CaptionStyle[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [activePanel, setActivePanel] = useState<EditorPanel>('captions')
   const [words, setWords] = useState<Word[]>([])
   const [cropPath, setCropPath] = useState<CropPath | null>(null)
   const [playheadSourceS, setPlayheadSourceS] = useState<number>(0)
@@ -480,33 +482,9 @@ export function Review() {
       {clips.length === 0 ? (
         <EmptyState />
       ) : (
-        <div className="mt-8 grid gap-x-6 gap-y-8 xl:grid-cols-[minmax(0,14rem)_minmax(0,1fr)_minmax(0,20rem)]">
-          {/* Ranked list */}
-          <section className="lg:max-h-[76vh] lg:overflow-y-auto lg:pr-1">
-            <p className="eyebrow border-b border-ink-800 pb-2">Ranked</p>
-            <ul>
-              {clips.map((clip, index) => (
-                <li key={clip.id}>
-                  <ClipRow
-                    clip={clip}
-                    index={index}
-                    selected={clip.id === selectedId}
-                    disabled={controlsLocked}
-                    onSelect={() => selectClip(clip.id)}
-                    onKeep={() =>
-                      setStatus(clip, clip.status === 'kept' ? 'candidate' : 'kept')
-                    }
-                    onDiscard={() =>
-                      setStatus(clip, clip.status === 'discarded' ? 'candidate' : 'discarded')
-                    }
-                  />
-                </li>
-              ))}
-            </ul>
-          </section>
-
-          {/* Player + trim */}
-          <section className="space-y-8">
+        <div className="mt-8 grid min-w-0 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(20rem,26rem)]">
+          {/* Player and timeline stay mounted as the primary editing surface. */}
+          <section className="min-w-0 space-y-8">
             {selected && jobId && (
               <>
                 <ClipPlayer
@@ -562,12 +540,33 @@ export function Review() {
             )}
           </section>
 
-          {/* Editor + style */}
-          <section className="space-y-10">
+          {/* Context panel: tabs only hide content; they never unmount editors. */}
+          <section className="min-w-0 space-y-6">
             {selected && (
               <>
-                <div>
-                  <p className="eyebrow">Why this clip</p>
+                <details className="border-b border-ink-800 pb-3">
+                  <summary className="min-h-11 cursor-pointer py-2 text-sm text-ink-200">
+                    Clips · {clips.length}
+                  </summary>
+                  <ul className="max-h-56 overflow-y-auto pr-1">
+                    {clips.map((clip, index) => (
+                      <li key={clip.id}>
+                        <ClipRow
+                          clip={clip}
+                          index={index}
+                          selected={clip.id === selectedId}
+                          disabled={controlsLocked}
+                          onSelect={() => selectClip(clip.id)}
+                          onKeep={() => setStatus(clip, clip.status === 'kept' ? 'candidate' : 'kept')}
+                          onDiscard={() => setStatus(clip, clip.status === 'discarded' ? 'candidate' : 'discarded')}
+                        />
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+
+                <details>
+                  <summary className="min-h-11 cursor-pointer py-2 text-sm text-ink-200">Why this clip</summary>
                   <p className="mt-2 max-w-prose text-[0.9375rem] leading-relaxed text-ink-300">
                     {selected.reason || 'No rationale returned for this clip.'}
                   </p>
@@ -576,21 +575,28 @@ export function Review() {
                       “{selected.hook}”
                     </p>
                   )}
+                </details>
+
+                <div role="group" aria-label="Clip editor sections" className="grid grid-cols-3 border-b border-ink-800">
+                  {([
+                    ['captions', 'Captions'],
+                    ['framing', 'Framing'],
+                    ['transcript', 'Transcript'],
+                  ] as const).map(([panel, label]) => (
+                    <button
+                      key={panel}
+                      type="button"
+                      aria-pressed={activePanel === panel}
+                      aria-controls={`editor-panel-${panel}`}
+                      onClick={() => setActivePanel(panel)}
+                      className={`min-h-11 border-b-2 px-2 text-sm ${activePanel === panel ? 'border-sodium-500 text-ink-100' : 'border-transparent text-ink-300 hover:text-ink-100'}`}
+                    >
+                      {label}
+                    </button>
+                  ))}
                 </div>
 
-                <CaptionEditor
-                  words={words}
-                  onChange={(next) => {
-                    if (controlsLocked || exportLock.current) return
-                    setWords(next)
-                    setWordsDirty(true)
-                  }}
-                  onSave={saveWords}
-                  saving={savingWords}
-                  disabled={controlsLocked}
-                  dirty={wordsDirty}
-                />
-
+                <section id="editor-panel-captions" aria-label="Captions" hidden={activePanel !== 'captions'} className="space-y-6">
                 <div>
                   <div className="flex items-center justify-between border-b border-ink-800 pb-2">
                     <p className="eyebrow">Caption presets</p>
@@ -655,6 +661,10 @@ export function Review() {
                     />
                   </div>
                 </details>
+
+                </section>
+
+                <section id="editor-panel-framing" aria-label="Framing" hidden={activePanel !== 'framing'} className="space-y-6">
 
                 <div>
                   <p className="eyebrow border-b border-ink-800 pb-2">Aspect ratio</p>
@@ -735,6 +745,23 @@ export function Review() {
                     </p>
                   )}
                 </details>
+
+                </section>
+
+                <section id="editor-panel-transcript" aria-label="Transcript" hidden={activePanel !== 'transcript'} className="space-y-6">
+                  <CaptionEditor
+                    words={words}
+                    onChange={(next) => {
+                      if (controlsLocked || exportLock.current) return
+                      setWords(next)
+                      setWordsDirty(true)
+                    }}
+                    onSave={saveWords}
+                    saving={savingWords}
+                    disabled={controlsLocked}
+                    dirty={wordsDirty}
+                  />
+                </section>
 
                 <div className="border-t border-ink-800 pt-6">
                   <button

@@ -135,11 +135,13 @@ async function main() {
 
     await page.goto(server.resolvedUrls.local[0] + 'jobs/job-1/clips/clip-1')
     const button = name => page.getByRole('button', { name, exact: true })
+    await page.locator('summary', { hasText: 'Clips · 2' }).click()
 
     // The timeline is available immediately without changing an existing edit.
     await page.getByRole('button', { name: /^Slice 1:/ }).waitFor()
     assert.equal(edits.length, 0)
     // 1. Enable per-slice framing
+    await button('Framing').click()
     await page.getByText('Whole clip framing', { exact: true }).click()
     await button('Per-slice framing').click()
     await eventually(() => assert.equal(edits.length, 1))
@@ -213,6 +215,7 @@ async function main() {
 
     // 5. Reload persists slice state
     await page.reload()
+    await page.locator('summary', { hasText: 'Clips · 2' }).click()
     await page.getByRole('button', { name: /^Slice 1:/ }).waitFor()
 
     // 6. Clip independence: switch to clip-2, ensure framing is Auto
@@ -267,6 +270,7 @@ async function main() {
     const handle = page.getByRole('button', { name: 'Drag start of clip' })
     const track = page.getByRole('group', { name: 'Framing slices' })
     assert.equal(await track.count(), 1)
+    await track.scrollIntoViewIfNeeded()
     const beforeTrim = await handle.boundingBox()
     const timelineBox = await track.boundingBox()
     await page.mouse.move(beforeTrim.x + beforeTrim.width / 2, beforeTrim.y + beforeTrim.height / 2)

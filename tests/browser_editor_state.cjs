@@ -66,6 +66,7 @@ async function main() {
       pending.resolve()
     }
     await page.goto('/jobs/m2-job/clips/m2-clip-a')
+    await page.locator('summary', { hasText: 'Clips · 2' }).click()
     const subtitles = page.getByLabel('Subtitles', { exact: true })
     const trim = page.getByRole('button', { name: 'Drag start of clip', exact: true })
     const word = (text) => page.getByRole('button', { name: text, exact: true })
