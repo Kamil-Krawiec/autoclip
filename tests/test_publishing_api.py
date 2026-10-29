@@ -228,6 +228,29 @@ class TestCreate:
 
         assert response.status_code == 422
 
+    def test_create_race_returns_the_existing_publication(self, client, monkeypatch) -> None:
+        export, _ = _seed()
+        real_lookup = store.get_publication_by_export
+        lookups = {"count": 0}
+
+        def miss_the_initial_checks(export_id: str):
+            # Simulate two requests that both pass the cheap "already exists"
+            # read before either insert has committed.
+            lookups["count"] += 1
+            if lookups["count"] <= 2:
+                return None
+            return real_lookup(export_id)
+
+        monkeypatch.setattr(store, "get_publication_by_export", miss_the_initial_checks)
+
+        first = client.post("/api/publish", json={"export_id": export.id})
+        second = client.post("/api/publish", json={"export_id": export.id})
+
+        assert first.status_code == 201
+        assert second.status_code == 200
+        assert first.json()["id"] == second.json()["id"]
+        assert store.get_publication_by_export(export.id) is not None
+
 
 class TestPatch:
     def test_updates_normalized_fields(self, client) -> None:

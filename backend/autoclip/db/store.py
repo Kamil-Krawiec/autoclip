@@ -444,41 +444,70 @@ def list_exports(clip_id: str) -> list[Export]:
 # --------------------------------------------------------------------------
 
 
+_PUBLICATION_INSERT = """
+    INSERT INTO publications (id, export_id, clip_id, status, title,
+                              description, tags_json, thumbnail_prompt,
+                              thumbnail_path, thumbnail_wide_path,
+                              final_path, best_day, privacy_status,
+                              youtube_video_id, youtube_url, error,
+                              created_at, updated_at, uploaded_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
+
+
+def _publication_values(publication: Publication) -> tuple[Any, ...]:
+    return (
+        publication.id,
+        publication.export_id,
+        publication.clip_id,
+        publication.status,
+        publication.title,
+        publication.description,
+        json.dumps(publication.tags, ensure_ascii=False),
+        publication.thumbnail_prompt,
+        publication.thumbnail_path,
+        publication.thumbnail_wide_path,
+        publication.final_path,
+        publication.best_day,
+        publication.privacy_status,
+        publication.youtube_video_id,
+        publication.youtube_url,
+        publication.error,
+        publication.created_at,
+        publication.updated_at,
+        publication.uploaded_at,
+    )
+
+
+def _insert_publication(conn: Any, publication: Publication, *, ignore_existing: bool) -> int:
+    sql = _PUBLICATION_INSERT
+    if ignore_existing:
+        sql += " ON CONFLICT(export_id) DO NOTHING"
+    return conn.execute(sql, _publication_values(publication)).rowcount
+
+
 def create_publication(publication: Publication) -> Publication:
     with connection() as conn:
-        conn.execute(
-            """
-            INSERT INTO publications (id, export_id, clip_id, status, title,
-                                      description, tags_json, thumbnail_prompt,
-                                      thumbnail_path, thumbnail_wide_path,
-                                      final_path, best_day, privacy_status,
-                                      youtube_video_id, youtube_url, error,
-                                      created_at, updated_at, uploaded_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                publication.id,
-                publication.export_id,
-                publication.clip_id,
-                publication.status,
-                publication.title,
-                publication.description,
-                json.dumps(publication.tags, ensure_ascii=False),
-                publication.thumbnail_prompt,
-                publication.thumbnail_path,
-                publication.thumbnail_wide_path,
-                publication.final_path,
-                publication.best_day,
-                publication.privacy_status,
-                publication.youtube_video_id,
-                publication.youtube_url,
-                publication.error,
-                publication.created_at,
-                publication.updated_at,
-                publication.uploaded_at,
-            ),
-        )
+        _insert_publication(conn, publication, ignore_existing=False)
     return publication
+
+
+def create_publication_idempotent(publication: Publication) -> tuple[Publication, bool]:
+    """Insert unless this export already has a publication; return it either way.
+
+    The API does a cheap "already exists" read first, but two simultaneous
+    requests can both miss it. This insert uses ``ON CONFLICT(export_id) DO
+    NOTHING`` so the loser reads the winner's row instead of surfacing a 500
+    from the UNIQUE constraint.
+    """
+    with connection() as conn:
+        inserted = _insert_publication(conn, publication, ignore_existing=True) == 1
+        row = conn.execute(
+            "SELECT * FROM publications WHERE export_id = ?", (publication.export_id,)
+        ).fetchone()
+    if row is None:
+        raise RuntimeError("Publication insert vanished without a row.")
+    return Publication.from_row(row), inserted
 
 
 def get_publication(publication_id: str) -> Publication | None:
@@ -585,6 +614,7 @@ def list_publish_candidates(limit: int = 50, ratio: str = "9:16") -> list[Publis
           AND e.id = (
               SELECT e2.id FROM exports e2
               WHERE e2.clip_id = e.clip_id
+                AND e2.ratio = e.ratio
               ORDER BY e2.created_at DESC, e2.id DESC
               LIMIT 1
           )

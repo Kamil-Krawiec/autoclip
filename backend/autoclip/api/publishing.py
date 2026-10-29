@@ -258,7 +258,10 @@ async def create_publication(payload: PublicationCreateIn, response: Response) -
         created_at=utcnow(),
         updated_at=utcnow(),
     )
-    publication = await asyncio.to_thread(store.create_publication, publication)
+    publication, inserted = await asyncio.to_thread(
+        store.create_publication_idempotent, publication
+    )
+    response.status_code = 201 if inserted else 200
     return await _out(publication)
 
 

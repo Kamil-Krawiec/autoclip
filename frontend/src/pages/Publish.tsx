@@ -388,20 +388,36 @@ export function PublishDetailPage() {
   }
 
   const publish = async () => {
-    if (privacy !== 'private') {
-      const label = privacy === 'public' ? 'public — it goes live immediately' : 'unlisted'
-      if (
-        !window.confirm(
-          `Publish as ${label}? Privacy is set at upload; you can change it later in YouTube Studio.`,
-        )
-      ) {
-        return
-      }
-    }
     setBusy('upload')
     setError(null)
     try {
-      apply(await api.uploadPublication(publication.id))
+      // The upload endpoint reads the stored row. Persist the form first, then
+      // confirm the privacy value that will actually be sent — a draft saved as
+      // public must not upload silently because the select currently says private.
+      const saved = await api.patchPublication(publication.id, {
+        title,
+        description,
+        tags,
+        thumbnail_prompt: prompt,
+        privacy_status: privacy,
+      })
+      apply(saved)
+      if (!saved.ready_to_upload) {
+        setError(new Error('Add a title and generate a thumbnail before uploading.'))
+        return
+      }
+      if (saved.privacy_status !== 'private') {
+        const label =
+          saved.privacy_status === 'public' ? 'public — it goes live immediately' : 'unlisted'
+        if (
+          !window.confirm(
+            `Publish as ${label}? Privacy is set at upload; you can change it later in YouTube Studio.`,
+          )
+        ) {
+          return
+        }
+      }
+      apply(await api.uploadPublication(saved.id))
     } catch (err) {
       setError(err as Error)
     } finally {

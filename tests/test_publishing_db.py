@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from autoclip import db, paths
@@ -166,6 +168,31 @@ class TestPublicationStore:
         with pytest.raises(sqlite3.IntegrityError):
             store.create_publication(_publication(export))
 
+    def test_idempotent_create_returns_the_existing_row(self, initialised_db: int) -> None:
+        export = _seed_export()
+
+        first, inserted = store.create_publication_idempotent(_publication(export))
+        second, inserted_again = store.create_publication_idempotent(_publication(export))
+
+        assert inserted is True
+        assert inserted_again is False
+        assert second.id == first.id
+        assert store.get_publication_by_export(export.id).id == first.id
+
+    def test_idempotent_create_is_atomic_under_parallel_calls(self, initialised_db: int) -> None:
+        export = _seed_export()
+        barrier = threading.Barrier(2)
+
+        def attempt():
+            barrier.wait()
+            return store.create_publication_idempotent(_publication(export))
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = [future.result() for future in [pool.submit(attempt), pool.submit(attempt)]]
+
+        assert sum(inserted for _, inserted in outcomes) == 1
+        assert len({publication.id for publication, _ in outcomes}) == 1
+
     def test_get_by_export(self, initialised_db: int) -> None:
         export = _seed_export()
         created = store.create_publication(_publication(export))
@@ -279,6 +306,24 @@ class TestPublishCandidates:
         candidates = store.list_publish_candidates(ratio="16:9")
 
         assert [candidate.ratio for candidate in candidates] == ["16:9"]
+
+    def test_latest_export_is_chosen_within_the_requested_ratio(self, initialised_db: int) -> None:
+        portrait = _seed_export(ratio="9:16", created_at="2026-10-01T10:00:00+00:00")
+        landscape = store.create_export(
+            Export(
+                id=new_id(),
+                clip_id=portrait.clip_id,
+                path="/tmp/landscape.mp4",
+                ratio="16:9",
+                created_at="2026-10-02T10:00:00+00:00",
+            )
+        )
+
+        portrait_candidates = store.list_publish_candidates(ratio="9:16")
+        landscape_candidates = store.list_publish_candidates(ratio="16:9")
+
+        assert [candidate.export_id for candidate in portrait_candidates] == [portrait.id]
+        assert [candidate.export_id for candidate in landscape_candidates] == [landscape.id]
 
     def test_candidate_without_publication(self, initialised_db: int) -> None:
         _seed_export()

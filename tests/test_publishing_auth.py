@@ -196,6 +196,63 @@ class TestConsentCallback:
 
         assert isinstance(result.get("error"), auth.PublishingAuthError)
 
+    def test_wrong_state_code_is_ignored_and_the_real_callback_still_works(self) -> None:
+        port = auth._free_port()
+        result: dict[str, str] = {}
+
+        def run() -> None:
+            result["code"] = auth._wait_for_code(port, timeout_s=5, expected_state="expected-state")
+
+        thread = threading.Thread(target=run)
+        thread.start()
+        try:
+            self._wait_until_listening(port)
+            with pytest.raises(urllib.error.HTTPError) as rejected:
+                urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/?code=attacker&state=wrong", timeout=5
+                )
+            assert rejected.value.code == 400
+
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/?code=real-code&state=expected-state", timeout=5
+            ) as response:
+                assert response.status == 200
+        finally:
+            thread.join(timeout=5)
+
+        assert result["code"] == "real-code"
+
+    def test_wrong_state_error_is_not_accepted(self) -> None:
+        port = auth._free_port()
+        result: dict[str, object] = {}
+
+        def run() -> None:
+            try:
+                auth._wait_for_code(port, timeout_s=5, expected_state="expected-state")
+            except auth.PublishingAuthError as exc:
+                result["error"] = exc
+
+        thread = threading.Thread(target=run)
+        thread.start()
+        try:
+            self._wait_until_listening(port)
+            with pytest.raises(urllib.error.HTTPError) as rejected:
+                urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/?error=access_denied&state=wrong", timeout=5
+                )
+            assert rejected.value.code == 400
+
+            with pytest.raises(urllib.error.HTTPError) as accepted_error:
+                urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/?error=access_denied&state=expected-state",
+                    timeout=5,
+                )
+            assert accepted_error.value.code == 400
+        finally:
+            thread.join(timeout=5)
+
+        assert isinstance(result.get("error"), auth.PublishingAuthError)
+
 
 class TestAuthorizeDockerRedirect:
     def test_binds_wildcard_but_redirects_to_localhost(
@@ -221,7 +278,12 @@ class TestAuthorizeDockerRedirect:
                 captured["code"] = code
 
         monkeypatch.setattr(auth, "_flow_class", lambda: FakeFlow)
-        monkeypatch.setattr(auth, "_wait_for_code", lambda port, timeout: "the-code")
+
+        def fake_wait(port: int, timeout: float, *, expected_state: str | None = None) -> str:
+            captured["expected_state"] = expected_state
+            return "the-code"
+
+        monkeypatch.setattr(auth, "_wait_for_code", fake_wait)
 
         written = auth.authorize(host="0.0.0.0", port=8765, open_browser=False)
 
@@ -231,6 +293,32 @@ class TestAuthorizeDockerRedirect:
             "prompt": "consent",
             "include_granted_scopes": "true",
         }
+        assert captured["expected_state"] == "state"
         assert captured["code"] == "the-code"
         assert written == auth.token_path()
         assert written.exists()
+
+    def test_authorize_refuses_to_start_when_google_returns_no_state(
+        self, client_secret_file: Path, monkeypatch
+    ) -> None:
+        class FakeFlow:
+            def __init__(self) -> None:
+                self.redirect_uri = ""
+                self.credentials = FakeCredentials()
+
+            @classmethod
+            def from_client_secrets_file(cls, path: str, scopes: list[str]):
+                return cls()
+
+            def authorization_url(self, **kwargs):
+                return ("https://consent.invalid", None)
+
+        monkeypatch.setattr(auth, "_flow_class", lambda: FakeFlow)
+        monkeypatch.setattr(
+            auth,
+            "_wait_for_code",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not wait")),
+        )
+
+        with pytest.raises(auth.PublishingAuthError, match="state"):
+            auth.authorize(host="0.0.0.0", port=8765, open_browser=False)
