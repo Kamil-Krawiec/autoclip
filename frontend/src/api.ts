@@ -70,7 +70,13 @@ export interface AutoFraming {
 }
 
 export interface Framing {
-  mode: 'fit' | 'split'
+  mode: 'fit'
+}
+
+export interface SplitPanel { x: number; y: number; width: number; height: number }
+export interface SplitFraming {
+  mode: 'split'
+  panels?: [SplitPanel, SplitPanel] | null
 }
 
 export interface ManualFraming {
@@ -80,7 +86,7 @@ export interface ManualFraming {
   zoom: number
 }
 
-export type SingleFraming = AutoFraming | Framing | ManualFraming
+export type SingleFraming = AutoFraming | Framing | SplitFraming | ManualFraming
 
 export interface FramingSlice {
   start_s: number
@@ -93,7 +99,7 @@ export interface SlicesFraming {
   segments: FramingSlice[]
 }
 
-export type ClipFraming = AutoFraming | Framing | ManualFraming | SlicesFraming | null
+export type ClipFraming = AutoFraming | Framing | SplitFraming | ManualFraming | SlicesFraming | null
 
 export interface CaptionOverrides {
   size_ratio?: number
@@ -161,6 +167,7 @@ export interface CropSegment {
   zoom: number
   fit: boolean
   split?: boolean
+  split_panels?: [SplitPanel, SplitPanel] | null
 }
 
 /** Mirrors autoclip.pipeline.reframe.croppath.CropPath. */

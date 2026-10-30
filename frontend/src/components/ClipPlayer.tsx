@@ -7,7 +7,10 @@ import {
   type CropPath,
   type CropSegment,
   type Word,
+  type SplitPanel,
 } from '../api'
+
+import { SplitFrameOverlay, type SplitPanels } from './SplitFramingEditor'
 
 const VOLUME_KEY = 'autoclip.volume'
 
@@ -22,7 +25,7 @@ const ASPECTS: Record<string, [number, number]> = {
 const MAX_HEIGHT_VH = 45
 
 export type FramingGeometry = { widthNorm: number; heightNorm: number; leftNorm: number; topNorm: number }
-export type PanRequest = { dx: number; dy: number; id: number }
+export type PanRequest = { dx: number; dy: number; id: number; resize?: boolean; panelIndex?: number }
 
 function readStoredVolume(): number {
   const stored = Number(window.localStorage.getItem(VOLUME_KEY))
@@ -51,6 +54,10 @@ export function ClipPlayer({
   seekRequest,
   draftGeometry,
   onPan,
+  onResize,
+  draftSplit,
+  onSplitTransform,
+  splitDisabled = false,
 }: {
   src: string
   startS: number
@@ -65,12 +72,17 @@ export function ClipPlayer({
   seekRequest?: { time: number; id: number } | null
   draftGeometry?: FramingGeometry | null
   onPan?: (dx: number, dy: number) => void
+  onResize?: (dx: number, dy: number) => void
+  draftSplit?: SplitPanels | null
+  onSplitTransform?: (index: number, dx: number, dy: number, resize: boolean) => void
+  splitDisabled?: boolean
 }) {
   const video = useRef<HTMLVideoElement>(null)
   const bgVideo = useRef<HTMLVideoElement>(null)
   const drag = useRef<{ x: number; y: number; moved: boolean } | null>(null)
   const suppressClick = useRef(false)
   const [playing, setPlaying] = useState(false)
+  const [frameDrag, setFrameDrag] = useState<'move' | 'resize' | null>(null)
   const [time, setTime] = useState(startS)
   const [volume, setVolume] = useState(readStoredVolume)
   const [muted, setMuted] = useState(false)
@@ -211,14 +223,9 @@ export function ClipPlayer({
   const duration = Math.max(0.01, endS - startS)
 
   const activeSegment = activeCropSegment(cropPath, elapsed)
-  const isFit = !draftGeometry && Boolean(activeSegment?.fit)
-  const isSplit = !draftGeometry && Boolean(activeSegment?.split)
-  const cropStyle = draftGeometry ? {
-    width: `${100 / draftGeometry.widthNorm}%`,
-    height: `${100 / draftGeometry.heightNorm}%`,
-    left: `${-100 * draftGeometry.leftNorm / draftGeometry.widthNorm}%`,
-    top: `${-100 * draftGeometry.topNorm / draftGeometry.heightNorm}%`,
-  } : isFit || isSplit ? null : cropWindowStyle(cropPath, activeSegment, elapsed)
+  const isFit = !draftGeometry && !draftSplit && Boolean(activeSegment?.fit)
+  const isSplit = !draftGeometry && !draftSplit && Boolean(activeSegment?.split)
+  const cropStyle = draftGeometry || draftSplit ? null : isFit || isSplit ? null : cropWindowStyle(cropPath, activeSegment, elapsed)
 
   useEffect(() => {
     if (!isFit && !isSplit) {
@@ -243,7 +250,60 @@ export function ClipPlayer({
   // max-height clamp shortens the element without narrowing it, so the rendered
   // shape stops matching the ratio — a 9:16 preview ends up looking square.
   // Deriving a matching max-width makes the box shrink along both axes instead.
-  const maxWidth = `${((MAX_HEIGHT_VH * aspectW) / aspectH).toFixed(3)}vh`
+  const editingSource = Boolean(draftGeometry || draftSplit)
+  const displayW = editingSource ? (cropPath?.source_width || 16) : aspectW
+  const displayH = editingSource ? (cropPath?.source_height || 9) : aspectH
+  const maxWidth = editingSource ? '100%' : `${((MAX_HEIGHT_VH * aspectW) / aspectH).toFixed(3)}vh`
+
+  const beginFrameDrag = (event: React.PointerEvent<HTMLElement>, mode: 'move' | 'resize') => {
+    if (event.button !== 0) return
+    event.stopPropagation()
+    drag.current = { x: event.clientX, y: event.clientY, moved: false }
+    setFrameDrag(mode)
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+
+  const moveFrameDrag = (event: React.PointerEvent<HTMLElement>, mode: 'move' | 'resize') => {
+    event.stopPropagation()
+    if (frameDrag !== mode || !drag.current) return
+    const stage = event.currentTarget.closest<HTMLElement>('[data-testid="clip-preview"]')
+    if (!stage) return
+    const rect = stage.getBoundingClientRect()
+    if (!rect.width || !rect.height) return
+    const dx = event.clientX - drag.current.x
+    const dy = event.clientY - drag.current.y
+    drag.current = { x: event.clientX, y: event.clientY, moved: true }
+    if (mode === 'resize') onResize?.(dx / rect.width, dy / rect.height)
+    else onPan?.(dx / rect.width, dy / rect.height)
+  }
+
+  const endFrameDrag = () => {
+    drag.current = null
+    setFrameDrag(null)
+  }
+
+  const moveFrameWithKeyboard = (event: React.KeyboardEvent<HTMLElement>) => {
+    const directions: Record<string, [number, number]> = {
+      ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1],
+    }
+    const direction = directions[event.key]
+    if (!direction) return
+    event.preventDefault()
+    const step = event.shiftKey ? 0.02 : 0.005
+    onPan?.(direction[0] * step, direction[1] * step)
+  }
+
+  const resizeFrameWithKeyboard = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    const directions: Record<string, [number, number]> = {
+      ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1],
+    }
+    const direction = directions[event.key]
+    if (!direction) return
+    event.stopPropagation()
+    event.preventDefault()
+    const step = event.shiftKey ? 0.04 : 0.01
+    onResize?.(direction[0] * step, direction[1] * step)
+  }
 
   return (
     <div className="mx-auto flex w-full flex-col items-stretch" style={{ maxWidth }}>
@@ -254,8 +314,9 @@ export function ClipPlayer({
           toggle()
         }}
         onPointerDown={(event) => {
-          if (!draftGeometry || !onPan || event.button !== 0) return
+          if (!draftGeometry || !onPan || event.button !== 0 || (event.target as HTMLElement).closest('[data-frame-handle]')) return
           drag.current = { x: event.clientX, y: event.clientY, moved: false }
+          setFrameDrag('move')
           event.currentTarget.setPointerCapture(event.pointerId)
         }}
         onPointerMove={(event) => {
@@ -266,19 +327,21 @@ export function ClipPlayer({
           const dy = event.clientY - drag.current.y
           if (!drag.current.moved && Math.abs(dx) + Math.abs(dy) < 3) return
           drag.current = { x: event.clientX, y: event.clientY, moved: true }
-          onPan(dx / rect.width, dy / rect.height)
+          if (frameDrag === 'resize') onResize?.(dx / rect.width, dy / rect.height)
+          else onPan?.(dx / rect.width, dy / rect.height)
         }}
         onPointerUp={() => {
           suppressClick.current = Boolean(drag.current?.moved)
           drag.current = null
+          setFrameDrag(null)
         }}
-        onPointerCancel={() => { drag.current = null }}
+        onPointerCancel={() => { drag.current = null; setFrameDrag(null) }}
         data-testid="clip-preview"
         {...(draftGeometry ? { 'data-editing-framing': 'true' } : {})}
-        style={{ aspectRatio: `${aspectW} / ${aspectH}`, containerType: 'size', touchAction: draftGeometry ? 'none' : undefined }}
-        role="button"
+        style={{ aspectRatio: `${displayW} / ${displayH}`, containerType: 'size', touchAction: editingSource ? 'none' : undefined }}
+        role={editingSource ? 'group' : 'button'}
         tabIndex={0}
-        aria-label={playing ? 'Pause' : 'Play'}
+        aria-label={editingSource ? 'Source video crop editor' : playing ? 'Pause' : 'Play'}
         onKeyDown={(e) => {
           if (e.key === ' ' || e.key === 'Enter') {
             e.preventDefault()
@@ -297,7 +360,7 @@ export function ClipPlayer({
             aria-hidden="true"
             onLoadedMetadata={() => syncBackground(true)}
             className={isSplit ? 'pointer-events-none absolute max-w-none' : 'pointer-events-none absolute inset-0 size-full scale-110 object-cover blur-xl'}
-            style={isSplit ? { ...splitVideoStyle, left: `${(panelLeft - panelWidth) * 100}%`, top: `${(0.5 + panelTop) * 100}%`, clipPath: 'inset(0 0 0 50%)' } : undefined}
+            style={isSplit ? activeSegment?.split_panels ? splitPanelStyle(activeSegment.split_panels[1], 1, cropPath!, aspectW, aspectH) : { ...splitVideoStyle, left: `${(panelLeft - panelWidth) * 100}%`, top: `${(0.5 + panelTop) * 100}%`, clipPath: 'inset(0 0 0 50%)' } : undefined}
           />
         )}
 
@@ -305,7 +368,9 @@ export function ClipPlayer({
           ref={video}
           src={src}
           className={
-            isSplit
+            editingSource
+              ? 'pointer-events-none absolute inset-0 size-full object-contain'
+              : isSplit
               ? 'absolute max-w-none'
               : isFit
               ? 'relative z-10 size-full object-contain'
@@ -313,7 +378,7 @@ export function ClipPlayer({
                 ? 'absolute max-w-none'
                 : 'size-full object-cover'
           }
-          style={isSplit ? splitVideoStyle : cropStyle ?? undefined}
+          style={isSplit ? activeSegment?.split_panels ? splitPanelStyle(activeSegment.split_panels[0], 0, cropPath!, aspectW, aspectH) : splitVideoStyle : cropStyle ?? undefined}
           onTimeUpdate={onTimeUpdate}
           onPlay={() => {
             setPlaying(true)
@@ -333,7 +398,39 @@ export function ClipPlayer({
           controls={nativeControls}
         />
 
-        {burnCaptions && (
+        {draftSplit && onSplitTransform && <SplitFrameOverlay panels={draftSplit} onTransform={onSplitTransform} disabled={splitDisabled} />}
+
+        {draftGeometry && (
+          <div
+            data-testid="crop-frame"
+            className="absolute z-30 cursor-move border-2 border-orange-500 bg-orange-400/10 shadow-[0_0_0_9999px_rgba(0,0,0,.24)]"
+            style={{ left: `${draftGeometry.leftNorm * 100}%`, top: `${draftGeometry.topNorm * 100}%`, width: `${draftGeometry.widthNorm * 100}%`, height: `${draftGeometry.heightNorm * 100}%`, touchAction: 'none', userSelect: 'none' }}
+            onPointerDown={(event) => beginFrameDrag(event, 'move')}
+            onPointerMove={(event) => moveFrameDrag(event, 'move')}
+            onPointerUp={endFrameDrag}
+            onPointerCancel={endFrameDrag}
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={moveFrameWithKeyboard}
+            tabIndex={0}
+            role="group"
+            aria-label="Crop frame. Use arrow keys to move; resize handle changes size."
+          >
+            <button
+              type="button"
+              data-frame-handle
+              aria-label="Resize crop frame"
+              title="Drag or use arrow keys to resize the crop frame"
+              className="absolute -bottom-3 -right-3 size-6 cursor-nwse-resize rounded-full border-2 border-white bg-orange-500 shadow"
+              onPointerDown={(event) => beginFrameDrag(event, 'resize')}
+              onPointerMove={(event) => moveFrameDrag(event, 'resize')}
+              onPointerUp={endFrameDrag}
+              onPointerCancel={endFrameDrag}
+              onKeyDown={resizeFrameWithKeyboard}
+            />
+          </div>
+        )}
+
+        {burnCaptions && !editingSource && (
           <CaptionOverlay
             words={words}
             time={time}
@@ -759,4 +856,23 @@ function groupWords(words: Word[], maxWords: number): Word[][] {
   }
   if (current.length > 0) groups.push(current)
   return groups
+}
+
+
+/** Match export's even-pixel crop, then contain the selected area in one output half. */
+function splitPanelStyle(panel: SplitPanel, index: number, path: CropPath, aspectW: number, aspectH: number) {
+  const w = Math.min(Math.floor(path.source_width / 2) * 2, Math.max(2, Math.floor(panel.width * path.source_width / 2) * 2))
+  const h = Math.min(Math.floor(path.source_height / 2) * 2, Math.max(2, Math.floor(panel.height * path.source_height / 2) * 2))
+  const x = Math.min(Math.floor((path.source_width - w) / 2) * 2, Math.floor(panel.x * path.source_width / 2) * 2) / path.source_width
+  const y = Math.min(Math.floor((path.source_height - h) / 2) * 2, Math.floor(panel.y * path.source_height / 2) * 2) / path.source_height
+  const width = w / path.source_width, height = h / path.source_height
+  const outputWidth = Math.min(1, (w / h) * aspectH / (2 * aspectW))
+  const outputHeight = outputWidth * aspectW / ((w / h) * aspectH)
+  const videoWidth = outputWidth / width, videoHeight = outputHeight / height
+  return {
+    width: `${videoWidth * 100}%`, height: `${videoHeight * 100}%`,
+    left: `${((1 - outputWidth) / 2 - x * videoWidth) * 100}%`,
+    top: `${(index * 0.5 + (0.5 - outputHeight) / 2 - y * videoHeight) * 100}%`,
+    clipPath: `inset(${y * 100}% ${(1 - x - width) * 100}% ${(1 - y - height) * 100}% ${x * 100}%)`,
+  }
 }

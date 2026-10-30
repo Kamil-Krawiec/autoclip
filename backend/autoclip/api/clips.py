@@ -36,10 +36,12 @@ from .schemas import (
     PreviewRequestIn,
     WordOut,
 )
+from .thumbnails import router as thumbnail_router
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["clips"])
+router.include_router(thumbnail_router)
 _PREVIEW_LOCK = threading.Lock()
 _PREVIEW_ROUND_EPSILON = 1e-6
 _PREVIEW_TIMEOUT_S = 120.0

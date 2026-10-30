@@ -9,7 +9,7 @@ from autoclip.app import create_app
 from autoclip.db import store
 from autoclip.db.models import Clip, ClipEdit, Job, Source, new_id
 from autoclip.pipeline import ffmpeg
-from autoclip.pipeline.framing import resolve_crop_path
+from autoclip.pipeline.framing import clip_crop_segment, resolve_crop_path
 from autoclip.pipeline.reframe.croppath import (
     CropKeyframe,
     CropPath,
@@ -115,7 +115,8 @@ def test_split_screen_saved_and_resolved_per_slice(client, sample_setup):
 
 
 @pytest.mark.slow
-def test_split_screen_render_preserves_both_halves(client, tmp_path: Path):
+@pytest.mark.parametrize("custom", [False, True])
+def test_split_screen_render_preserves_both_halves(client, tmp_path: Path, custom):
     source_path = tmp_path / "split-source.mp4"
     subprocess.run(
         [
@@ -145,8 +146,14 @@ def test_split_screen_render_preserves_both_halves(client, tmp_path: Path):
     clip = Clip(id=new_id(), job_id=job.id, start_s=0, end_s=2)
     store.replace_clips(job.id, [clip])
     Transcript(words=[Word("Test", 0, 1)]).save(JobWorkspace(job.id).transcript)
+    framing = {"mode": "split"}
+    if custom:
+        framing["panels"] = [
+            {"x": 0.5, "y": 0.25, "width": 0.5, "height": 0.5},
+            {"x": 0, "y": 0.5, "width": 0.25, "height": 0.5},
+        ]
     res = client.patch(
-        f"/api/clips/{clip.id}/edit", json={"framing": {"mode": "split"}, "burn_captions": False}
+        f"/api/clips/{clip.id}/edit", json={"framing": framing, "burn_captions": False}
     )
     assert res.status_code == 200, res.text
     result = client.post(f"/api/clips/{clip.id}/export", json={})
@@ -177,8 +184,39 @@ def test_split_screen_render_preserves_both_halves(client, tmp_path: Path):
         offset = (y * 108 + x) * 3
         return pixels[offset : offset + 3]
 
-    assert pixel(54, 48)[0] > 200 and pixel(54, 48)[2] < 30
-    assert pixel(54, 144)[2] > 200 and pixel(54, 144)[0] < 30
+    top, bottom = (2, 0) if custom else (0, 2)
+    assert pixel(54, 48)[top] > 200 and pixel(54, 48)[bottom] < 30
+    assert pixel(54, 144)[bottom] > 200 and pixel(54, 144)[top] < 30
+    if custom:
+        preview = client.post(
+            f"/api/clips/{clip.id}/preview", json={"start_s": 0.5, "duration_s": 1}
+        )
+        assert preview.status_code == 200, preview.text
+        preview_path = tmp_path / "exact-preview.mp4"
+        preview_path.write_bytes(preview.content)
+        decoded = subprocess.run(
+            [
+                ffmpeg.ffmpeg_path(),
+                "-v",
+                "error",
+                "-i",
+                str(preview_path),
+                "-frames:v",
+                "1",
+                "-vf",
+                "scale=108:192",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "rgb24",
+                "-",
+            ],
+            check=True,
+            capture_output=True,
+        ).stdout
+        for y, channel, other in [(48, top, bottom), (144, bottom, top)]:
+            offset = (y * 108 + 54) * 3
+            assert decoded[offset + channel] > 200 and decoded[offset + other] < 30
 
 
 def test_invalid_slices_framing_rejected(client, sample_setup):
@@ -510,3 +548,99 @@ def test_real_render_synthetic_slices(client, tmp_path: Path):
 
     auto = frame_at(12.0)
     assert close(pixel(auto, 54, 96), (0, 128, 0))
+
+
+@pytest.mark.parametrize("sliced", [False, True])
+def test_custom_split_persists_resolves_and_clips(client, sample_setup, sliced):
+    source, job, clip = sample_setup
+    panels = [
+        {"x": 0.1, "y": 0.2, "width": 0.3, "height": 0.4},
+        {"x": 0.5, "y": 0.1, "width": 0.5, "height": 0.8},
+    ]
+    leaf = {"mode": "split", "panels": panels}
+    framing = (
+        {"mode": "slices", "segments": [{"start_s": 10, "end_s": 25, "framing": leaf}]}
+        if sliced
+        else leaf
+    )
+    response = client.patch(f"/api/clips/{clip.id}/edit", json={"framing": framing})
+    assert response.status_code == 200, response.text
+    assert response.json()["framing"] == framing
+    db.reset_connections()
+    edit = store.get_clip_edit(clip.id)
+    assert edit.framing == framing
+    path = resolve_crop_path(source, clip, job, edit, None)
+    restored = CropPath.from_dict(path.to_dict())
+    segment = clip_crop_segment(restored.segments[0], 2, 8)
+    assert segment.split
+    assert segment.split_panels == panels
+    assert (segment.start_s, segment.end_s) == (2, 8)
+    assert restored.segments[0].start_s == 0
+
+
+@pytest.mark.parametrize(
+    "bad_panels",
+    [
+        [],
+        [{"x": 0, "y": 0, "width": 1, "height": 1}],
+        [{"x": 0, "y": 0, "width": 1, "height": 1}] * 3,
+        *[
+            [{"x": 0, "y": 0, "width": 0.5, "height": 0.5} | override] * 2
+            for override in [
+                {"x": -0.1},
+                {"y": 1},
+                {"width": 0},
+                {"height": -0.1},
+                {"x": 0.8},
+                {"y": 0.8},
+                {"width": "0.5"},
+                {"x": True},
+                {"extra": 0},
+            ]
+        ],
+    ],
+)
+def test_custom_split_rejects_invalid_panels(client, sample_setup, bad_panels):
+    _, _, clip = sample_setup
+    response = client.patch(
+        f"/api/clips/{clip.id}/edit",
+        json={"framing": {"mode": "split", "panels": bad_panels}},
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity"])
+def test_custom_split_rejects_nonfinite(client, sample_setup, value):
+    _, _, clip = sample_setup
+    panel = '{"x":' + value + ',"y":0,"width":0.5,"height":0.5}'
+    response = client.patch(
+        f"/api/clips/{clip.id}/edit",
+        content='{"framing":{"mode":"split","panels":[' + panel + "," + panel + "]}}",
+        headers={"Content-Type": "application/json"},
+    )
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail[0]["type"] == "finite_number"
+    assert detail[0]["loc"][-1] == "x"
+    assert detail[0]["input"] in ("nan", "inf", "-inf")
+    assert store.get_clip_edit(clip.id) is None
+
+
+def test_split_panel_pixels_are_even_bounded_and_nonempty():
+    from autoclip.pipeline.export import _split_panel_pixels
+
+    assert _split_panel_pixels({"x": 0.5, "y": 0.25, "width": 0.5, "height": 0.5}, 640, 360) == (
+        320,
+        180,
+        320,
+        90,
+    )
+    for width, height in [(641, 361), (640, 360)]:
+        for panel in [
+            {"x": 0, "y": 0, "width": 1, "height": 1},
+            {"x": 0.9999, "y": 0.9999, "width": 0.0001, "height": 0.0001},
+        ]:
+            w, h, x, y = _split_panel_pixels(panel, width, height)
+            assert all(v % 2 == 0 for v in (w, h, x, y))
+            assert w >= 2 and h >= 2 and x >= 0 and y >= 0
+            assert x + w <= width and y + h <= height

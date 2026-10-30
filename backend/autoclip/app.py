@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import math
 import os
 from collections.abc import AsyncIterator
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -75,6 +78,15 @@ def create_app() -> FastAPI:
         description="Local-first AI video clipper.",
         lifespan=lifespan,
     )
+
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(request: Request, exc: RequestValidationError) -> JSONResponse:
+        # Validation details echo input; nonfinite numbers must remain valid JSON.
+        detail = jsonable_encoder(
+            exc.errors(),
+            custom_encoder={float: lambda value: value if math.isfinite(value) else str(value)},
+        )
+        return JSONResponse(status_code=422, content={"detail": detail})
 
     app.include_router(api_router)
 

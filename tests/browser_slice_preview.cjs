@@ -172,33 +172,75 @@ async function main() {
     await page.waitForFunction(() => Math.abs(document.querySelector('video').currentTime - 7) < 0.2)
     assert.equal(await secondSlice.getAttribute('aria-pressed'), 'true')
     assert.equal(edits.length, 2)
+
+    // Dragging the timeline scrubs smoothly, keeps the selected slice, and
+    // continues outside the track until pointer-up releases capture.
+    const timeline = page.getByRole('group', { name: 'Framing slices' })
+    const playhead = page.getByTestId('timeline-playhead')
+    const timelineDragBox = await playhead.boundingBox()
+    const scrub = async fraction => {
+      await page.waitForFunction(value => Math.abs(document.querySelector('video').currentTime - value * 10) < 0.25, fraction)
+    }
+    await page.mouse.move(timelineDragBox.x + timelineDragBox.width / 2, timelineDragBox.y + timelineDragBox.height / 2)
+    await page.mouse.down()
+    await scrub(0.7)
+    const trackBox = await timeline.boundingBox()
+    await page.mouse.move(trackBox.x + trackBox.width * 0.25, trackBox.y + trackBox.height / 2, { steps: 4 })
+    await scrub(0.25)
+    assert.equal(await secondSlice.getAttribute('aria-pressed'), 'true')
+    await page.mouse.move(trackBox.x + trackBox.width * 0.95, trackBox.y + trackBox.height / 2)
+    await scrub(0.95)
+    await page.mouse.up()
+    await page.mouse.move(trackBox.x + trackBox.width * 0.2, trackBox.y + trackBox.height / 2)
+    await page.waitForTimeout(100)
+    assert.ok(await video.evaluate(el => el.currentTime) > 9.3)
+
+    // A plain click on either slice still selects and seeks that slice.
+    await firstSlice.click()
+    await page.waitForFunction(() => Math.abs(document.querySelector('video').currentTime - 2) < 0.25)
+    assert.equal(await firstSlice.getAttribute('aria-pressed'), 'true')
+    await secondSlice.click()
+    await page.waitForFunction(() => Math.abs(document.querySelector('video').currentTime - 7) < 0.25)
+    assert.equal(await secondSlice.getAttribute('aria-pressed'), 'true')
+
+    // Pointer cancellation also relinquishes capture and does not mutate edits.
+    const playheadBox = await playhead.boundingBox()
+    await page.mouse.move(playheadBox.x + playheadBox.width / 2, playheadBox.y + playheadBox.height / 2)
+    await page.mouse.down()
+    await timeline.evaluate(el => el.dispatchEvent(new PointerEvent('pointercancel', {
+      bubbles: true, pointerId: 1, pointerType: 'mouse', clientX: 0, clientY: 0,
+    })))
+    await page.mouse.up()
+    assert.equal(edits.length, 2)
     if (process.env.AUTOCLIP_SCREENSHOT) await page.screenshot({ path: process.env.AUTOCLIP_SCREENSHOT, fullPage: true })
 
     // 3. Select slice and set Manual mode, adjust zoom and Apply framing
     await button('Slice Manual').click()
-    await page.getByText('Fine position', { exact: true }).click()
+    const cropFrame = page.getByTestId('crop-frame')
+    const resizeHandle = page.getByRole('button', { name: 'Resize crop frame' })
+    await cropFrame.waitFor()
     if (process.env.AUTOCLIP_TEST_VIDEO) {
       await page.locator('[data-editing-framing="true"]').waitFor()
       assert.equal(await page.locator('video').count(), 1)
       assert.equal(await page.getByRole('group', { name: 'Framing slices' }).count(), 1)
       if (process.env.AUTOCLIP_RESIZE_SCREENSHOT) await page.screenshot({ path: process.env.AUTOCLIP_RESIZE_SCREENSHOT, fullPage: true })
     }
-    const originalWidth = await video.evaluate(el => parseFloat(el.style.width))
-    await page.getByRole('slider', { name: 'Zoom' }).focus()
+    const initialFrame = await cropFrame.evaluate(el => ({ left: parseFloat(el.style.left), width: parseFloat(el.style.width) }))
+    await cropFrame.focus()
     await page.keyboard.press('ArrowRight')
     await page.getByRole('status').filter({ hasText: 'Unsaved framing' }).waitFor()
+    const movedFrame = await cropFrame.evaluate(el => ({ left: parseFloat(el.style.left), width: parseFloat(el.style.width) }))
+    assert.notEqual(movedFrame.left, initialFrame.left)
+    const resizeBox = await resizeHandle.boundingBox()
+    await page.mouse.move(resizeBox.x + resizeBox.width / 2, resizeBox.y + resizeBox.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(resizeBox.x + resizeBox.width / 2 - 18, resizeBox.y + resizeBox.height / 2 - 18, { steps: 4 })
+    await page.mouse.up()
+    const resizedFrame = await cropFrame.evaluate(el => ({ left: parseFloat(el.style.left), width: parseFloat(el.style.width) }))
+    assert.ok(resizedFrame.width < movedFrame.width)
     if (process.env.AUTOCLIP_TEST_VIDEO) {
       await video.evaluate(el => { el.currentTime = 7.5; el.dispatchEvent(new Event('timeupdate')) })
       await page.waitForFunction(() => Math.abs(document.querySelector('video').currentTime - 7.5) < 0.2)
-      assert.ok(Number(await page.getByRole('slider', { name: 'Zoom' }).inputValue()) > 1)
-      await page.waitForFunction(width => parseFloat(document.querySelector('video').style.width) > width, originalWidth)
-      const before = Number(await page.getByRole('slider', { name: 'Center X' }).inputValue())
-      const box = await page.getByTestId('clip-preview').boundingBox()
-      await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5)
-      await page.mouse.down()
-      await page.mouse.move(box.x + box.width * 0.7, box.y + box.height * 0.5, { steps: 4 })
-      await page.mouse.up()
-      await page.waitForFunction(value => Number(document.querySelector('[aria-label="Center X"]').value) < value, before)
     }
     await button('Apply framing').click()
     await eventually(() => assert.equal(edits.length, 4))
@@ -257,7 +299,8 @@ async function main() {
     // 10. Dirty framing / caption draft blocks preview button
     await page.locator('li').filter({ hasText: 'Clip 1' }).click()
     await button('Slice Manual').click()
-    await page.getByRole('slider', { name: 'Zoom' }).focus()
+    await cropFrame.waitFor()
+    await cropFrame.focus()
     await page.keyboard.press('ArrowRight')
     await page.getByRole('status').filter({ hasText: 'Unsaved framing' }).waitFor()
     await page.waitForFunction(() => Array.from(document.querySelectorAll('button')).some(el => el.textContent.trim() === 'Render exact preview' && el.disabled))
