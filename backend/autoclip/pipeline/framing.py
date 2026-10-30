@@ -94,6 +94,8 @@ def clip_crop_segment(segment: CropSegment, start_s: float, end_s: float) -> Cro
         strategy=segment.strategy,
         zoom=segment.zoom,
         fit=False,
+        split=segment.split,
+        split_panels=segment.split_panels,
     )
 
 
@@ -118,8 +120,18 @@ def _fit_segment(width: int, height: int, start_s: float, end_s: float) -> CropS
     )
 
 
-def _split_segment(width: int, height: int, start_s: float, end_s: float) -> CropSegment:
-    return CropSegment(start_s, end_s, width, height, [CropKeyframe(start_s, 0, 0)], split=True)
+def _split_segment(
+    width: int, height: int, start_s: float, end_s: float, framing: dict[str, Any]
+) -> CropSegment:
+    return CropSegment(
+        start_s,
+        end_s,
+        width,
+        height,
+        [CropKeyframe(start_s, 0, 0)],
+        split=True,
+        split_panels=framing.get("panels"),
+    )
 
 
 def _manual_segment(
@@ -173,7 +185,9 @@ def resolve_crop_path(
 ) -> CropPath:
     width, height = source.width or 1920, source.height or 1080
     if edit.framing is not None and edit.framing["mode"] == "split":
-        return CropPath(width, height, [_split_segment(width, height, 0, clip.duration_s)])
+        return CropPath(
+            width, height, [_split_segment(width, height, 0, clip.duration_s, edit.framing)]
+        )
     if edit.framing is not None and edit.framing["mode"] == "fit":
         return CropPath(width, height, [_fit_segment(width, height, 0, clip.duration_s)])
     if edit.framing is not None and edit.framing["mode"] == "manual":
@@ -236,7 +250,7 @@ def _resolve_slices(
         if mode == "fit":
             resolved.append(_fit_segment(width, height, s0, s1))
         elif mode == "split":
-            resolved.append(_split_segment(width, height, s0, s1))
+            resolved.append(_split_segment(width, height, s0, s1, leaf))
         elif mode == "manual":
             resolved.append(_manual_segment(width, height, ratio, leaf, s0, s1))
         else:

@@ -73,6 +73,7 @@ class CropSegment:
     #: cut someone out of frame, which the acceptance bar forbids.
     fit: bool = False
     split: bool = False
+    split_panels: list[dict[str, float]] | None = None
 
     @property
     def duration_s(self) -> float:
@@ -125,6 +126,7 @@ class CropPath:
                     zoom=raw.get("zoom", 0.0),
                     fit=raw.get("fit", False),
                     split=raw.get("split", False),
+                    split_panels=raw.get("split_panels"),
                 )
             )
         return cls(

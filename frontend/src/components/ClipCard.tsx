@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { formatDuration, type Clip, type ClipStatus } from '../api'
 
 interface ClipCardProps {
@@ -8,19 +9,41 @@ interface ClipCardProps {
   onExport: () => void
 }
 
+function Thumbnail({ clip }: { clip: Clip }) {
+  const [failed, setFailed] = useState(false)
+  const [attempt, setAttempt] = useState(0)
+  useEffect(() => {
+    if (!failed || attempt >= 4) return
+    // Lazy cards may race for the single CPU render slot. Retry a bounded
+    // number of times, staggered, without leaving an unbounded render queue.
+    const timer = window.setTimeout(() => {
+      setFailed(false)
+      setAttempt(value => value + 1)
+    }, 600 * 2 ** attempt + Math.random() * 500)
+    return () => window.clearTimeout(timer)
+  }, [failed, attempt])
+  const url = `/api/clips/${encodeURIComponent(clip.id)}/thumbnail?start=${clip.start_s}&end=${clip.end_s}&retry=${attempt}`
+  return (
+    <div className="relative flex aspect-video items-center justify-center bg-ink-800 text-center text-sm text-ink-300">
+      {failed ? (
+        <div className="px-4 py-2" role="status" aria-label="Clip thumbnail unavailable">
+          <p>{attempt < 4 ? 'Loading preview…' : 'Preview unavailable · media missing, audio only, or renderer busy'}</p>
+          <button type="button" className="mt-1 min-h-11 underline" onClick={() => { setFailed(false); setAttempt(0) }}>Retry preview</button>
+        </div>
+      ) : (
+        <img src={url} alt={`Source preview for ${clip.title || `clip ${clip.rank}`}`} loading="lazy" decoding="async" width={320} height={180} className="absolute h-full w-full object-contain" onError={() => setFailed(true)} />
+      )}
+    </div>
+  )
+}
+
 export function ClipCard({ clip, busy, onStatus, onEdit, onExport }: ClipCardProps) {
   const kept = clip.status === 'kept'
   const discarded = clip.status === 'discarded'
 
   return (
     <article className="overflow-hidden border border-ink-700 bg-ink-850">
-      <div
-        className="flex aspect-video items-center justify-center bg-ink-800 px-4 text-center text-sm text-ink-300"
-        role="img"
-        aria-label="Clip thumbnail unavailable"
-      >
-        Preview available in editor
-      </div>
+      <Thumbnail key={`${clip.id}:${clip.start_s}:${clip.end_s}`} clip={clip} />
 
       <div className="space-y-4 p-4">
         <div className="flex items-start justify-between gap-4">

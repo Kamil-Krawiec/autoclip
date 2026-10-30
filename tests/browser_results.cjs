@@ -12,7 +12,7 @@ async function main() {
     await server.listen()
     browser = await chromium.launch({ headless: true })
     const page = await browser.newPage({ viewport: { width: 375, height: 900 } })
-    const errors = [], patchStatuses = [], exports = []
+    const errors = [], patchStatuses = [], exports = [], thumbnailRequests = []
     let failedJobLoads = 2, holdExport = false, releaseExport, notifyExportHeld
     const exportHeld = new Promise(resolve => { notifyExportHeld = resolve })
     const clips = ['a', 'b'].map((id, index) => ({
@@ -39,6 +39,10 @@ async function main() {
       if (p === '/api/jobs/empty') return route.fulfill({ json: { ...job, id: 'empty', source: { ...job.source, title: 'Empty source' } } })
       if (p === '/api/jobs/job/clips') return route.fulfill({ json: clips })
       if (p === '/api/jobs/empty/clips') return route.fulfill({ json: [] })
+      if (/^\/api\/clips\/[ab]\/thumbnail$/.test(p)) {
+        thumbnailRequests.push({ path: p, start: url.searchParams.get('start'), end: url.searchParams.get('end') })
+        return route.fulfill({ status: 200, contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j0eQAAAAASUVORK5CYII=', 'base64') })
+      }
       if (p === '/api/caption-styles') return route.fulfill({ json: [] })
       if (p === '/api/clips/a/words' || p === '/api/clips/b/words') return route.fulfill({ json: [{ text: 'hello', start: 0, end: 1, speaker: null }] })
       if (p.endsWith('/crop-path')) return route.fulfill({ status: 404, json: { detail: 'No crop path' } })
@@ -67,7 +71,14 @@ async function main() {
     assert.equal(failedJobLoads, 0, 'both initial job loads failed before retry')
     await page.getByRole('button', { name: 'Retry loading results' }).click()
     await page.getByRole('heading', { name: 'Synthetic source' }).waitFor()
-    assert.equal(await page.getByRole('img', { name: 'Clip thumbnail unavailable' }).count(), 2)
+    const thumbnails = page.getByRole('img', { name: /^Source preview for Clip [AB]$/ })
+    assert.equal(await thumbnails.count(), 2)
+    for (const thumbnail of await thumbnails.all()) {
+      await thumbnail.scrollIntoViewIfNeeded()
+      await page.waitForFunction(image => image.complete && image.naturalWidth === 1, await thumbnail.elementHandle())
+    }
+    assert.deepEqual(thumbnailRequests.map(request => request.path), ['/api/clips/a/thumbnail', '/api/clips/b/thumbnail'])
+    assert.ok(thumbnailRequests.every(request => request.start === '0' && request.end === '5'))
     assert.equal(await page.getByText('Reason a').isVisible(), false, 'reason starts collapsed')
     await page.getByText('Why this clip').first().focus()
     await page.keyboard.press('Enter')
