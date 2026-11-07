@@ -120,6 +120,10 @@ def _migration_v4(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE clip_edits ADD COLUMN caption_overrides_json TEXT")
 
 
+def _migration_v5(conn: sqlite3.Connection) -> None:
+    conn.execute("ALTER TABLE clip_edits ADD COLUMN removed_ranges_json TEXT")
+
+
 #: Ordered migrations. Index + 1 is the resulting ``user_version``.
 #: Append only — never edit a migration that has shipped.
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
@@ -127,6 +131,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migration_v2,
     _migration_v3,
     _migration_v4,
+    _migration_v5,
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

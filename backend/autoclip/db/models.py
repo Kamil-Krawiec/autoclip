@@ -198,6 +198,7 @@ class ClipEdit:
     burn_captions: bool = True
     framing: Framing | None = None
     caption_overrides: dict[str, float] | None = None
+    removed_ranges: list[dict[str, float]] = field(default_factory=list)
     updated_at: str = field(default_factory=utcnow)
 
     @classmethod
@@ -213,6 +214,9 @@ class ClipEdit:
             ),
             caption_style=row["caption_style"],
             ratio=row["ratio"],
+            removed_ranges=json.loads(row["removed_ranges_json"])
+            if row["removed_ranges_json"]
+            else [],
             updated_at=row["updated_at"],
         )
 

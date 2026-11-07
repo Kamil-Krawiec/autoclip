@@ -8,6 +8,7 @@ import {
   type CropSegment,
   type Word,
   type SplitPanel,
+  type TimeRange,
 } from '../api'
 
 import { SplitFrameOverlay, type SplitPanels } from './SplitFramingEditor'
@@ -58,6 +59,8 @@ export function ClipPlayer({
   draftSplit,
   onSplitTransform,
   splitDisabled = false,
+  fps,
+  removedRanges = [],
 }: {
   src: string
   startS: number
@@ -76,6 +79,8 @@ export function ClipPlayer({
   draftSplit?: SplitPanels | null
   onSplitTransform?: (index: number, dx: number, dy: number, resize: boolean) => void
   splitDisabled?: boolean
+  fps?: number | null
+  removedRanges?: TimeRange[]
 }) {
   const video = useRef<HTMLVideoElement>(null)
   const bgVideo = useRef<HTMLVideoElement>(null)
@@ -180,6 +185,13 @@ export function ClipPlayer({
   const onTimeUpdate = useCallback(() => {
     const element = video.current
     if (!element) return
+    if (!element.paused) {
+      const removed = removedRanges.find(range => element.currentTime >= range.start_s && element.currentTime < range.end_s)
+      if (removed) {
+        element.currentTime = Math.min(endS, removed.end_s)
+        syncBackground(true)
+      }
+    }
     if (element.currentTime >= endS) {
       element.pause()
       element.currentTime = startS
@@ -193,12 +205,32 @@ export function ClipPlayer({
     }
     updateTime(element.currentTime)
     syncBackground(false)
-  }, [endS, startS, syncBackground, updateTime])
+  }, [endS, startS, syncBackground, updateTime, removedRanges])
+
+  useEffect(() => {
+    if (!playing || removedRanges.length === 0) return
+    let frame = 0
+    const skipRemoved = () => {
+      const element = video.current
+      if (!element || element.paused) return
+      const removed = removedRanges.find(range => element.currentTime >= range.start_s && element.currentTime < range.end_s)
+      if (removed) {
+        element.currentTime = Math.min(endS, removed.end_s)
+        updateTime(element.currentTime)
+        syncBackground(true)
+      }
+      frame = requestAnimationFrame(skipRemoved)
+    }
+    frame = requestAnimationFrame(skipRemoved)
+    return () => cancelAnimationFrame(frame)
+  }, [playing, removedRanges, endS, syncBackground, updateTime])
 
   const toggle = () => {
     const element = video.current
     if (!element) return
     if (element.paused) {
+      const removed = removedRanges.find(range => element.currentTime >= range.start_s && element.currentTime < range.end_s)
+      if (removed) element.currentTime = Math.min(endS, removed.end_s)
       if (element.currentTime < startS || element.currentTime >= endS) {
         element.currentTime = startS
         updateTime(startS)
@@ -206,7 +238,7 @@ export function ClipPlayer({
           bgVideo.current.currentTime = startS
         }
       }
-      void element.play()
+      void element.play().catch(() => setPlaying(false))
       if (bgVideo.current) {
         syncBackground(true)
         void bgVideo.current.play().catch(() => {})
@@ -218,6 +250,25 @@ export function ClipPlayer({
       setPlaying(false)
     }
   }
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null
+      if (event.altKey || event.ctrlKey || event.metaKey || target?.closest('input,textarea,select,button,[contenteditable="true"],[data-testid="crop-frame"]')) return
+      if (event.code === 'Space') {
+        event.preventDefault()
+        toggle()
+      } else if ((event.key === 'ArrowLeft' || event.key === 'ArrowRight') && video.current?.paused) {
+        event.preventDefault()
+        const frame = fps && Number.isFinite(fps) && fps > 0 ? 1 / fps : 1 / 30
+        video.current.currentTime = Math.max(startS, Math.min(endS, video.current.currentTime + (event.key === 'ArrowLeft' ? -frame : frame)))
+        updateTime(video.current.currentTime)
+        syncBackground(true)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  })
 
   const elapsed = Math.max(0, time - startS)
   const duration = Math.max(0.01, endS - startS)

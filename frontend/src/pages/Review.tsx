@@ -386,6 +386,7 @@ export function Review() {
         burn_captions: selected.burn_captions ?? true,
         caption_overrides: canonicalCaptionOverridesKey(selected.caption_overrides),
         framing: selectedFramingKey,
+        removed_ranges: selected.removed_ranges ?? [],
         wordsRevision,
       })
     : ''
@@ -491,6 +492,8 @@ export function Review() {
               <>
                 <ClipPlayer
                   src={api.mediaUrl(jobId)}
+                  fps={job.source?.fps}
+                  removedRanges={selected.removed_ranges}
                   startS={selected.start_s}
                   endS={selected.end_s}
                   words={words}
@@ -518,8 +521,11 @@ export function Review() {
                     cropPath={cropPath}
                     sourceWidth={job.source?.width ?? cropPath?.source_width ?? 0}
                     sourceHeight={job.source?.height ?? cropPath?.source_height ?? 0}
+                    sourceDuration={job.source?.duration_s}
                     hasVideoSource={hasVideoSource}
                     playheadSourceS={playheadSourceS}
+                    removedRanges={selected.removed_ranges ?? []}
+                    onCommitRemoved={(ranges) => updateClipEdit(selected, { removed_ranges: ranges })}
                     onSeek={(time) => setSeekRequest((previous) => ({ time, id: (previous?.id ?? 0) + 1 }))}
                     disabled={controlsLocked || captionLayoutDirty || wordsDirty}
                     framingDirty={framingDirty}

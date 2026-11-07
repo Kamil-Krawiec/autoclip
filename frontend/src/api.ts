@@ -127,8 +127,11 @@ export interface Clip {
   burn_captions?: boolean
   framing?: ClipFraming
   caption_overrides?: CaptionOverrides | null
+  removed_ranges?: TimeRange[]
   exports: ExportRecord[]
 }
+
+export interface TimeRange { start_s: number; end_s: number }
 
 export interface ClipEditPatch {
   words?: Word[]
@@ -137,6 +140,7 @@ export interface ClipEditPatch {
   burn_captions?: boolean
   framing?: ClipFraming
   caption_overrides?: CaptionOverrides | null
+  removed_ranges?: TimeRange[]
 }
 
 export interface ClipPreviewRequest {
@@ -477,6 +481,7 @@ export const api = {
   listClips: (jobId: string) => request<Clip[]>(`/api/jobs/${jobId}/clips`),
   getClip: (clipId: string) => request<Clip>(`/api/clips/${clipId}`),
 
+  getTimeline: (clipId: string, signal?: AbortSignal) => request<{ strip: string; peaks: number[] }>(`/api/clips/${clipId}/timeline`, { signal }),
   getCropPath: (clipId: string) => request<CropPath>(`/api/clips/${clipId}/crop-path`),
   getClipWords: (clipId: string) => request<Word[]>(`/api/clips/${clipId}/words`),
 
