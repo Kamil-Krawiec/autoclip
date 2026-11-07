@@ -118,7 +118,17 @@ def build_video_filtergraph(
             parts.append(prefix)
 
         if segment.split:
-            parts.extend(_split_chain(source_label, index, out_w, out_h))
+            parts.extend(
+                _split_chain(
+                    source_label,
+                    index,
+                    out_w,
+                    out_h,
+                    segment.split_panels,
+                    request.crop_path.source_width,
+                    request.crop_path.source_height,
+                )
+            )
             continue
         if segment.fit:
             parts.extend(_fit_chain(source_label, index, out_w, out_h))
@@ -157,16 +167,41 @@ def build_video_filtergraph(
     return ";".join(parts)
 
 
-def _split_chain(source_label: str, index: int, out_w: int, out_h: int) -> list[str]:
+def _split_panel_pixels(
+    panel: dict[str, float], width: int, height: int
+) -> tuple[int, int, int, int]:
+    """Quantize normalized windows to bounded, even crop coordinates and sizes."""
+    crop_w = min(width // 2 * 2, max(2, int(panel["width"] * width) // 2 * 2))
+    crop_h = min(height // 2 * 2, max(2, int(panel["height"] * height) // 2 * 2))
+    x = min((width - crop_w) // 2 * 2, int(panel["x"] * width) // 2 * 2)
+    y = min((height - crop_h) // 2 * 2, int(panel["y"] * height) // 2 * 2)
+    return crop_w, crop_h, x, y
+
+
+def _split_chain(
+    source_label: str,
+    index: int,
+    out_w: int,
+    out_h: int,
+    panels: list[dict[str, float]] | None = None,
+    source_width: int = 0,
+    source_height: int = 0,
+) -> list[str]:
     panel_h = out_h // 2
     fit = (
         f"scale={out_w}:{panel_h}:force_original_aspect_ratio=decrease,"
         f"pad={out_w}:{panel_h}:(ow-iw)/2:(oh-ih)/2"
     )
+    crops = ["iw/2:ih:0:0", "iw-iw/2:ih:iw/2:0"]
+    if panels is not None:
+        crops = [
+            ":".join(map(str, _split_panel_pixels(panel, source_width, source_height)))
+            for panel in panels
+        ]
     return [
         f"{source_label}format=yuv444p,split=2[left{index}][right{index}]",
-        f"[left{index}]crop=iw/2:ih:0:0,{fit}[top{index}]",
-        f"[right{index}]crop=iw-iw/2:ih:iw/2:0,{fit}[bottom{index}]",
+        f"[left{index}]crop={crops[0]},{fit}[top{index}]",
+        f"[right{index}]crop={crops[1]},{fit}[bottom{index}]",
         f"[top{index}][bottom{index}]vstack,setsar=1,format=yuv420p[v{index}]",
     ]
 

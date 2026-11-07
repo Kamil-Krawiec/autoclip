@@ -109,11 +109,17 @@ export function FramingEditor({
     if (panRequest === lastPan.current) return
     lastPan.current = panRequest
     if (!panRequest || disabled || !geometry) return
-    updateDraft((current) => ({
-      ...current,
-      center_x: current.center_x - panRequest.dx * geometry.widthNorm,
-      center_y: current.center_y - panRequest.dy * geometry.heightNorm,
-    }))
+    if (panRequest.resize) {
+      const delta = Math.abs(panRequest.dx) >= Math.abs(panRequest.dy) ? panRequest.dx : panRequest.dy
+      const nextWidth = clamp(geometry.widthNorm + delta * 2, 0.05, 1)
+      updateDraft((current) => ({ ...current, zoom: current.zoom * geometry.widthNorm / nextWidth }))
+    } else {
+      updateDraft((current) => ({
+        ...current,
+        center_x: current.center_x + panRequest.dx,
+        center_y: current.center_y + panRequest.dy,
+      }))
+    }
   }, [panRequest])
 
   const commitDraft = useCallback(
@@ -155,7 +161,7 @@ export function FramingEditor({
         <div>
           <span className="eyebrow">Manual framing</span>
           <p className="mt-0.5 text-xs text-ink-400">
-            Drag the video above to move the frame, or adjust the controls below.
+            Drag the orange frame to move it. Use its handle to resize; arrow keys also work.
           </p>
         </div>
         {isDirty && (
@@ -164,72 +170,6 @@ export function FramingEditor({
           </span>
         )}
       </div>
-
-      <details>
-        <summary className="cursor-pointer text-xs text-ink-400">Fine position</summary>
-        <div className="mt-2 grid gap-3 sm:grid-cols-2">
-          <label className="block text-xs text-ink-300">
-            <span className="flex justify-between">
-              <span>Center X</span>
-              <span className="numeric text-ink-400">{Math.round(draft.center_x * 100)}%</span>
-            </span>
-            <input
-              type="range"
-              aria-label="Center X"
-              min={0}
-              max={100}
-              step={1}
-              value={Math.round(draft.center_x * 100)}
-              onChange={(e) => {
-                const pct = Number(e.target.value)
-                updateDraft((current) => ({ ...current, center_x: pct / 100 }))
-              }}
-              className="mt-1 w-full accent-sodium-500"
-            />
-          </label>
-
-          <label className="block text-xs text-ink-300">
-            <span className="flex justify-between">
-              <span>Center Y</span>
-              <span className="numeric text-ink-400">{Math.round(draft.center_y * 100)}%</span>
-            </span>
-            <input
-              type="range"
-              aria-label="Center Y"
-              min={0}
-              max={100}
-              step={1}
-              value={Math.round(draft.center_y * 100)}
-              onChange={(e) => {
-                const pct = Number(e.target.value)
-                updateDraft((current) => ({ ...current, center_y: pct / 100 }))
-              }}
-              className="mt-1 w-full accent-sodium-500"
-            />
-          </label>
-
-        </div>
-      </details>
-
-      <label className="block text-xs text-ink-300">
-        <span className="flex justify-between">
-          <span>Zoom</span>
-          <span className="numeric text-ink-400">{draft.zoom.toFixed(1)}×</span>
-        </span>
-        <input
-          type="range"
-          aria-label="Zoom"
-          min={MIN_ZOOM}
-          max={MAX_ZOOM}
-          step={0.1}
-          value={draft.zoom}
-          onChange={(e) => {
-            const zoom = Number(e.target.value)
-            updateDraft((current) => ({ ...current, zoom }))
-          }}
-          className="mt-1 w-full accent-sodium-500"
-        />
-      </label>
 
       <div className="flex items-center justify-end gap-2 pt-1">
         <button

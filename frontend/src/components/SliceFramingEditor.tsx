@@ -1,14 +1,16 @@
-import { useEffect, useMemo, useState, type MouseEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 
 import {
   formatTimecode,
   type CropPath,
   type FramingSlice,
   type ManualFraming,
+  type SplitFraming,
   type SingleFraming,
   type SlicesFraming,
   type Word,
 } from '../api'
+import { SplitFramingEditor, type SplitPanels } from './SplitFramingEditor'
 import { FramingEditor } from './FramingEditor'
 import { TrimBar } from './TrimBar'
 import type { FramingGeometry, PanRequest } from './ClipPlayer'
@@ -126,6 +128,7 @@ export function SliceFramingEditor({
   words,
   onTrim,
   onDraftGeometry,
+  onDraftSplit,
   panRequest,
 }: {
   clipId: string
@@ -147,6 +150,7 @@ export function SliceFramingEditor({
   words: Word[]
   onTrim: (start: number, end: number) => void
   onDraftGeometry: (geometry: FramingGeometry | null) => void
+  onDraftSplit: (panels: SplitPanels | null) => void
   panRequest: PanRequest | null
 }) {
   const segments = useMemo(
@@ -154,6 +158,8 @@ export function SliceFramingEditor({
     [slicesFraming.segments, clipStartS, clipEndS],
   )
   const [selectedIndex, setSelectedIndex] = useState(0)
+  const timelinePointerStart = useRef<{ id: number; x: number; y: number } | null>(null)
+  const suppressTimelineClick = useRef(false)
 
   // Keep selected index valid and prefer visible slices when clip or segments change.
   useEffect(() => {
@@ -190,7 +196,7 @@ export function SliceFramingEditor({
   }, [segments, clipStartS, clipEndS])
 
   useEffect(() => {
-    if (disabled || framingDirty) return
+    if (disabled || framingDirty || timelinePointerStart.current) return
     const current = visibleSlices.find(
       (entry) => playheadSourceS >= entry.visStartS && playheadSourceS < entry.visEndS,
     )
@@ -305,8 +311,10 @@ export function SliceFramingEditor({
     let nextFraming: SingleFraming
     if (nextMode === 'auto') {
       nextFraming = { mode: 'auto' }
-    } else if (nextMode === 'fit' || nextMode === 'split') {
-      nextFraming = { mode: nextMode }
+    } else if (nextMode === 'fit') {
+      nextFraming = { mode: 'fit' }
+    } else if (nextMode === 'split') {
+      nextFraming = { mode: 'split' }
     } else {
       nextFraming =
         activeSlice.framing.mode === 'manual' ? activeSlice.framing : { ...DEFAULT_MANUAL }
@@ -317,10 +325,10 @@ export function SliceFramingEditor({
     await onCommitSlices({ mode: 'slices', segments: nextSegments })
   }
 
-  const handleCommitSelectedManual = async (nextManual: ManualFraming): Promise<boolean> => {
+  const handleCommitSelectedFraming = async (nextFraming: ManualFraming | SplitFraming): Promise<boolean> => {
     if (!activeSlice) return false
     const nextSegments = segments.map((s, idx) =>
-      idx === activeIndex ? { ...s, framing: nextManual } : s,
+      idx === activeIndex ? { ...s, framing: nextFraming } : s,
     )
     return onCommitSlices({ mode: 'slices', segments: nextSegments })
   }
@@ -375,6 +383,47 @@ export function SliceFramingEditor({
   const playheadVisible =
     playheadRelS >= -EPSILON && playheadRelS <= clipDurationS + EPSILON
 
+  const seekFromTimelinePointer = (event: React.PointerEvent<HTMLDivElement>) => {
+    const timeline = event.currentTarget.closest('[aria-label="Framing slices"]')
+    const rect = timeline?.getBoundingClientRect()
+    if (!rect || rect.width <= 0) return
+    const fraction = clamp01((event.clientX - rect.left) / rect.width)
+    onSeek(Number((clipStartS + fraction * clipDurationS).toFixed(4)))
+  }
+
+  const handleTimelinePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (disabled || framingDirty || event.button !== 0 || (event.target instanceof Element && event.target.closest('button'))) return
+    timelinePointerStart.current = { id: event.pointerId, x: event.clientX, y: event.clientY }
+    suppressTimelineClick.current = false
+    event.currentTarget.setPointerCapture(event.pointerId)
+    seekFromTimelinePointer(event)
+  }
+
+  const handleTimelinePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!event.currentTarget.hasPointerCapture(event.pointerId)) return
+    const start = timelinePointerStart.current
+    if (start?.id === event.pointerId && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 4) {
+      suppressTimelineClick.current = true
+    }
+    seekFromTimelinePointer(event)
+  }
+
+  const handleTimelineClickCapture = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (!suppressTimelineClick.current) return
+    suppressTimelineClick.current = false
+    event.preventDefault()
+    event.stopPropagation()
+  }
+
+  const handlePlayheadPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (disabled || framingDirty || event.button !== 0) return
+    event.preventDefault()
+    event.stopPropagation()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    timelinePointerStart.current = { id: event.pointerId, x: event.clientX, y: event.clientY }
+    seekFromTimelinePointer(event)
+  }
+
   return (
     <div
       className="space-y-4 border border-ink-800 bg-ink-900/40 p-3"
@@ -386,6 +435,23 @@ export function SliceFramingEditor({
       <div
         role="group"
         aria-label="Framing slices"
+        onPointerDown={handleTimelinePointerDown}
+        onPointerMove={handleTimelinePointerMove}
+        onClickCapture={handleTimelineClickCapture}
+        onPointerUp={(event) => {
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId)
+          }
+          timelinePointerStart.current = null
+        }}
+        onPointerCancel={(event) => {
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId)
+          }
+          timelinePointerStart.current = null
+          suppressTimelineClick.current = false
+        }}
+        style={{ touchAction: 'none' }}
         className="relative h-full"
       >
         <div className="flex h-full w-full divide-x divide-ink-800 overflow-hidden border border-ink-800 bg-ink-900/60">
@@ -422,11 +488,23 @@ export function SliceFramingEditor({
         {playheadVisible && (
           <div
             aria-hidden="true"
-            className="pointer-events-none absolute bottom-0 top-0 z-10 w-0.5"
+            data-testid="timeline-playhead"
+            onPointerDown={handlePlayheadPointerDown}
+            onPointerMove={handleTimelinePointerMove}
+            onPointerUp={(event) => {
+              if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+              timelinePointerStart.current = null
+            }}
+            onPointerCancel={(event) => {
+              if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+              timelinePointerStart.current = null
+              suppressTimelineClick.current = false
+            }}
+            className="absolute bottom-0 top-0 z-10 w-3 -translate-x-1/2 cursor-ew-resize touch-none"
             style={{ left: `calc(${playheadPct}% - 1px)` }}
           >
-            <div className="h-full w-full bg-sodium-500" />
-            <span className="absolute -top-1 left-1/2 block h-2 w-2 -translate-x-1/2 rounded-full bg-sodium-500" />
+            <div className="pointer-events-none absolute inset-x-[5px] h-full bg-sodium-500" />
+            <span className="pointer-events-none absolute -top-1 left-1/2 block h-2 w-2 -translate-x-1/2 rounded-full bg-sodium-500" />
           </div>
         )}
       </div>
@@ -506,6 +584,17 @@ export function SliceFramingEditor({
             </button>
           </div>
 
+            {activeSlice.framing.mode === 'split' && (
+              <SplitFramingEditor
+                key={`${clipId}:split:${activeIndex}:${activeEntry.visStartS}`}
+                framing={activeSlice.framing}
+                disabled={disabled}
+                onDirtyChange={onDirtyChange}
+                onCommit={handleCommitSelectedFraming}
+                onDraftSplit={onDraftSplit}
+                panRequest={panRequest}
+              />
+            )}
             {activeSlice.framing.mode === 'manual' && (
             <FramingEditor
               key={`${clipId}:slice:${activeIndex}:${activeEntry.visStartS}`}
@@ -514,7 +603,7 @@ export function SliceFramingEditor({
               cropPath={selectedManualSubCropPath}
               disabled={disabled}
               onDirtyChange={onDirtyChange}
-              onCommit={handleCommitSelectedManual}
+              onCommit={handleCommitSelectedFraming}
               onDraftGeometry={onDraftGeometry}
               panRequest={panRequest}
             />

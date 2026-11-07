@@ -159,7 +159,27 @@ class ExportOut(BaseModel):
 
 class AutoFitFramingIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    mode: Literal["auto", "fit", "split"]
+    mode: Literal["auto", "fit"]
+
+
+class SplitPanelIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    x: float = Field(ge=0, lt=1, allow_inf_nan=False, strict=True)
+    y: float = Field(ge=0, lt=1, allow_inf_nan=False, strict=True)
+    width: float = Field(gt=0, le=1, allow_inf_nan=False, strict=True)
+    height: float = Field(gt=0, le=1, allow_inf_nan=False, strict=True)
+
+    @model_validator(mode="after")
+    def _check_inside_source(self) -> SplitPanelIn:
+        if self.x + self.width > 1 or self.y + self.height > 1:
+            raise ValueError("Split panel must be wholly inside the source.")
+        return self
+
+
+class SplitFramingIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["split"]
+    panels: tuple[SplitPanelIn, SplitPanelIn] | None = None
 
 
 class ManualFramingIn(BaseModel):
@@ -170,7 +190,9 @@ class ManualFramingIn(BaseModel):
     zoom: float = Field(ge=1, le=4, allow_inf_nan=False, strict=True)
 
 
-LeafFramingIn = Annotated[AutoFitFramingIn | ManualFramingIn, Field(discriminator="mode")]
+LeafFramingIn = Annotated[
+    AutoFitFramingIn | SplitFramingIn | ManualFramingIn, Field(discriminator="mode")
+]
 
 
 class SliceSegmentIn(BaseModel):
@@ -202,7 +224,7 @@ class SlicesFramingIn(BaseModel):
 
 
 FramingIn = Annotated[
-    AutoFitFramingIn | ManualFramingIn | SlicesFramingIn,
+    AutoFitFramingIn | SplitFramingIn | ManualFramingIn | SlicesFramingIn,
     Field(discriminator="mode"),
 ]
 

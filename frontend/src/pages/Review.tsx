@@ -22,6 +22,7 @@ import { CaptionLayoutEditor } from '../components/CaptionLayoutEditor'
 import { ClipPlayer, type FramingGeometry, type PanRequest } from '../components/ClipPlayer'
 import { ErrorNote } from '../components/ErrorNote'
 import { ExactPreview } from '../components/ExactPreview'
+import type { SplitPanels } from '../components/SplitFramingEditor'
 import { SliceFramingEditor } from '../components/SliceFramingEditor'
 
 const RATIOS = ['9:16', '1:1', '16:9'] as const
@@ -53,6 +54,7 @@ export function Review() {
   const [cropPath, setCropPath] = useState<CropPath | null>(null)
   const [playheadSourceS, setPlayheadSourceS] = useState<number>(0)
   const [seekRequest, setSeekRequest] = useState<{ time: number; id: number } | null>(null)
+  const [draftSplit, setDraftSplit] = useState<SplitPanels | null>(null)
   const [draftGeometry, setDraftGeometry] = useState<FramingGeometry | null>(null)
   const [panRequest, setPanRequest] = useState<PanRequest | null>(null)
   const [wordsDirty, setWordsDirty] = useState(false)
@@ -315,7 +317,7 @@ export function Review() {
     if (clip.framing?.mode === 'slices') return true
     let initialFraming: SingleFraming = { mode: 'auto' }
     if (clip.framing?.mode === 'fit' || clip.framing?.mode === 'split') {
-      initialFraming = { mode: clip.framing.mode }
+      initialFraming = { ...clip.framing }
     } else if (clip.framing?.mode === 'manual') {
       initialFraming = { ...clip.framing }
     }
@@ -500,7 +502,11 @@ export function Review() {
                   onPlayheadChange={setPlayheadSourceS}
                   seekRequest={seekRequest}
                   draftGeometry={draftGeometry}
+                  draftSplit={draftSplit}
+                  splitDisabled={controlsLocked || captionLayoutDirty || wordsDirty}
+                  onSplitTransform={(panelIndex, dx, dy, resize) => setPanRequest(previous => ({ dx, dy, resize, panelIndex, id: (previous?.id ?? 0) + 1 }))}
                   onPan={(dx, dy) => setPanRequest((previous) => ({ dx, dy, id: (previous?.id ?? 0) + 1 }))}
+                  onResize={(dx, dy) => setPanRequest((previous) => ({ dx, dy, resize: true, id: (previous?.id ?? 0) + 1 }))}
                 />
                 {timelineFraming && (
                   <SliceFramingEditor
@@ -526,6 +532,7 @@ export function Review() {
                     words={words}
                     onTrim={commitTrim}
                     onDraftGeometry={setDraftGeometry}
+                    onDraftSplit={setDraftSplit}
                     panRequest={panRequest}
                   />
                 )}
