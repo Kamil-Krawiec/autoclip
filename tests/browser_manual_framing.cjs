@@ -54,6 +54,7 @@ async function main() {
     await page.locator('summary', { hasText: 'Clips · 2' }).click()
     await button('Slice Manual').click()
     await button('Framing').click()
+    await button('Edit window').click()
     await frame.waitFor()
     assert.deepEqual((await getClip('manual-a')).framing,{mode:'manual',center_x:0.5,center_y:0.5,zoom:1})
     const stage = page.getByTestId('clip-preview')
@@ -73,6 +74,7 @@ async function main() {
     await eventually(async()=>assert.equal(await editorFieldset.isEnabled(),true))
     assert.ok(Math.abs((await getClip('manual-a')).framing.center_x-(movedFrame.left+movedFrame.width/2)/100)<0.002)
 
+    await button('Edit window').click()
     await resizeHandle.focus(); await resizeHandle.press('ArrowLeft')
     await button('Discard framing changes').waitFor()
     await eventually(async()=>assert.equal(await button('Apply framing').isEnabled(),true))
@@ -91,11 +93,15 @@ async function main() {
     assert.equal(await page.getByLabel('Subtitles',{exact:true}).isEnabled(),true)
     await button('Discard framing changes').click()
     await eventually(async()=>assert.equal(await button('Export this clip').isEnabled(),true))
+    await button('Edit window').click()
     await frame.focus(); await frame.press('ArrowRight')
     await button('Apply framing').click()
     const saved=await getClip('manual-a')
+    await button('Edit window').click()
     const savedFrame=await readFrame()
     await page.reload()
+    await button('Framing').click()
+    await button('Edit window').click()
     await frame.waitFor()
     await eventually(async()=>{
       const current=await readFrame()
@@ -118,6 +124,7 @@ async function main() {
     await eventually(()=>assert.equal(typeof releaseEdit,'function'))
     releaseEdit(); mode='real'
     await eventually(async()=>assert.equal(await editorFieldset.isEnabled(),true))
+    await button('Edit window').click()
     // Native touch events exercise touch-action and pointer capture, including vertical movement.
     await stage.evaluate(el=>el.scrollIntoView({block:'center',behavior:'instant'}))
     await page.evaluate(()=>new Promise((resolve,reject)=>{
@@ -150,6 +157,7 @@ async function main() {
     await button('Apply framing').click()
     await eventually(()=>assert.equal(patches.length,count+1))
     await eventually(async()=>assert.equal(await editorFieldset.isEnabled(),true))
+    await button('Edit window').click()
     assert.notEqual((await readFrame()).left,beforeTouch.left)
     assert.ok(Math.abs((await getClip('manual-a')).framing.center_x-saved.framing.center_x)>0.001)
     await button('Export this clip').click()

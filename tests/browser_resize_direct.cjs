@@ -20,6 +20,7 @@ async function main() {
     await button('Transcript').click(); await button('Pierwszy').waitFor()
     await page.locator('summary',{hasText:'Clips · 2'}).click()
     await button('Slice Manual').click(); await button('Framing').click()
+    await button('Edit window').click()
     await eventually(async()=>assert.ok(await page.getByTestId('crop-frame').count()))
     const stage=page.getByTestId('clip-preview'), frame=page.getByTestId('crop-frame'), handle=page.getByRole('button',{name:'Resize crop frame'})
     assert.equal(await stage.locator('video').count(),1)
@@ -39,6 +40,7 @@ async function main() {
     let saved=patches.at(-1).framing
     assert.equal(saved.mode,'manual')
     assert.ok(Math.abs(saved.center_x-(movedFrame.left+movedFrame.width/2)/100)<0.002)
+    await button('Edit window').click()
     await eventually(async()=>assert.ok(await handle.isEnabled()))
     const resized=await handle.boundingBox()
     const resizeDirection=saved.zoom<3.99 ? -1 : 1
@@ -46,6 +48,7 @@ async function main() {
     await button('Apply framing').click(); await eventually(()=>assert.equal(patches.length,initialPatchCount+2))
     const resizedSaved=patches.at(-1).framing
     assert.ok(resizeDirection<0 ? resizedSaved.zoom>saved.zoom : resizedSaved.zoom<saved.zoom)
+    await button('Edit window').click()
     await eventually(async()=>assert.ok(await handle.isEnabled()))
     const keyboardDirection=saved.center_x<0.9 ? 'ArrowRight' : 'ArrowLeft'
     await frame.focus(); await frame.press(keyboardDirection); await button('Apply framing').click(); await eventually(()=>assert.equal(patches.length,initialPatchCount+3))
@@ -54,6 +57,7 @@ async function main() {
     assert.ok(keyboardDirection==='ArrowRight' ? keyboardSaved.center_x>resizedSaved.center_x : keyboardSaved.center_x<resizedSaved.center_x)
     assert.ok(keyboardSaved.center_x<1 && keyboardSaved.zoom>=1 && keyboardSaved.zoom<=4)
     const resizeKey = keyboardSaved.zoom < 3.99 ? 'ArrowLeft' : 'ArrowRight'
+    await button('Edit window').click()
     await handle.focus(); await handle.press(resizeKey); await button('Apply framing').click()
     await eventually(()=>assert.equal(patches.length,initialPatchCount+4))
     const handleKeyboardSaved=patches.at(-1).framing
