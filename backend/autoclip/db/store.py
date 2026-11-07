@@ -331,8 +331,9 @@ def upsert_clip_edit(edit: ClipEdit) -> ClipEdit:
         conn.execute(
             """
             INSERT INTO clip_edits (clip_id, edited_words_json, caption_style, ratio,
-                                    burn_captions, framing_json, caption_overrides_json, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                    burn_captions, framing_json, caption_overrides_json,
+                                    removed_ranges_json, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(clip_id) DO UPDATE SET
                 edited_words_json = excluded.edited_words_json,
                 caption_style = excluded.caption_style,
@@ -340,6 +341,7 @@ def upsert_clip_edit(edit: ClipEdit) -> ClipEdit:
                 burn_captions = excluded.burn_captions,
                 framing_json = excluded.framing_json,
                 caption_overrides_json = excluded.caption_overrides_json,
+                removed_ranges_json = excluded.removed_ranges_json,
                 updated_at = excluded.updated_at
             """,
             (
@@ -350,6 +352,7 @@ def upsert_clip_edit(edit: ClipEdit) -> ClipEdit:
                 edit.burn_captions,
                 json.dumps(edit.framing) if edit.framing is not None else None,
                 json.dumps(edit.caption_overrides) if edit.caption_overrides else None,
+                json.dumps(edit.removed_ranges),
                 utcnow(),
             ),
         )
@@ -364,11 +367,14 @@ def patch_clip_edit(clip_id: str, changes: dict[str, Any]) -> ClipEdit:
         "ratio": "ratio",
         "burn_captions": "burn_captions",
         "framing": "framing_json",
+        "removed_ranges": "removed_ranges_json",
     }
     overrides = changes.get("caption_overrides", UNSET)
     values = {
         columns[key]: (
-            json.dumps(value) if key in {"edited_words", "framing"} and value is not None else value
+            json.dumps(value)
+            if key in {"edited_words", "framing", "removed_ranges"} and value is not None
+            else value
         )
         for key, value in changes.items()
         if key != "caption_overrides"

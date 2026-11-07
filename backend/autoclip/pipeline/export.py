@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..config import ExportSettings
@@ -58,10 +58,54 @@ class ExportRequest:
     burn_captions: bool = True
     output_start_s: float | None = None
     output_duration_s: float | None = None
+    removed_ranges: list[dict[str, float]] = field(default_factory=list)
 
     @property
     def duration_s(self) -> float:
         return self.end_s - self.start_s
+
+
+def kept_windows(
+    start_s: float,
+    end_s: float,
+    removed_ranges: list[dict[str, float]],
+    output_start_s: float | None = None,
+    output_duration_s: float | None = None,
+) -> list[tuple[float, float]]:
+    """Return retained intervals in clip-relative time, optionally inside a preview window."""
+    first = max(start_s, start_s + (output_start_s or 0.0))
+    last = min(end_s, first + output_duration_s) if output_duration_s is not None else end_s
+    cursor = first
+    result = []
+    for cut in removed_ranges:
+        if cut["end_s"] <= cursor:
+            continue
+        if cut["start_s"] >= last:
+            break
+        if cut["start_s"] > cursor:
+            result.append((cursor - start_s, min(cut["start_s"], last) - start_s))
+        cursor = max(cursor, cut["end_s"])
+    if cursor < last:
+        result.append((cursor - start_s, last - start_s))
+    return result
+
+
+def remap_words(
+    words: list[Word], clip_start: float, windows: list[tuple[float, float]]
+) -> list[Word]:
+    """Map source-time words into the concatenated retained timeline."""
+    result: list[Word] = []
+    offset = 0.0
+    for start, end in windows:
+        for word in words:
+            left = max(word.start - clip_start, start)
+            right = min(word.end - clip_start, end)
+            if right > left:
+                result.append(
+                    Word(word.text, offset + left - start, offset + right - start, word.speaker)
+                )
+        offset += end - start
+    return result
 
 
 def ratio_dimensions(ratio: str) -> tuple[int, int]:
@@ -148,7 +192,11 @@ def build_video_filtergraph(
         parts.append(f"{''.join(labels)}concat=n={len(segments)}:v=1:a=0[vcat]")
         current = "[vcat]"
 
-    post_ass_trim = request.output_start_s is not None or request.output_duration_s is not None
+    post_ass_trim = (
+        bool(request.removed_ranges)
+        or request.output_start_s is not None
+        or request.output_duration_s is not None
+    )
     ass_out = "[vass]" if post_ass_trim else "[vout]"
 
     if request.burn_captions and subtitle_name is not None:
@@ -160,7 +208,31 @@ def build_video_filtergraph(
     else:
         ass_out = current
 
-    if post_ass_trim:
+    if request.removed_ranges:
+        windows = kept_windows(
+            request.start_s,
+            request.end_s,
+            request.removed_ranges,
+            request.output_start_s,
+            request.output_duration_s,
+        )
+        if not windows:
+            raise ExportError("The selected preview contains no retained footage.")
+        if len(windows) > 1:
+            parts.append(
+                f"{ass_out}split={len(windows)}"
+                + "".join(f"[cutin{i}]" for i in range(len(windows)))
+            )
+        for i, (start_s, end_s) in enumerate(windows):
+            source = f"[cutin{i}]" if len(windows) > 1 else ass_out
+            parts.append(
+                f"{source}trim=start={start_s:.4f}:end={end_s:.4f},setpts=PTS-STARTPTS[cut{i}]"
+            )
+        parts.append(
+            "".join(f"[cut{i}]" for i in range(len(windows)))
+            + f"concat=n={len(windows)}:v=1:a=0[vout]"
+        )
+    elif post_ass_trim:
         start_s, end_s = _output_window(request)
         parts.append(f"{ass_out}trim=start={start_s:.4f}:end={end_s:.4f},setpts=PTS-STARTPTS[vout]")
 
@@ -249,6 +321,29 @@ def _output_window(request: ExportRequest) -> tuple[float, float]:
 
 def build_audio_filtergraph(settings: ExportSettings, request: ExportRequest | None = None) -> str:
     base = f"loudnorm=I={settings.loudness_lufs}:TP={LOUDNESS_TRUE_PEAK}:LRA={LOUDNESS_RANGE}"
+    if request and request.removed_ranges:
+        windows = kept_windows(
+            request.start_s,
+            request.end_s,
+            request.removed_ranges,
+            request.output_start_s,
+            request.output_duration_s,
+        )
+        if not windows:
+            raise ExportError("The selected preview contains no retained footage.")
+        if len(windows) == 1:
+            start_s, end_s = windows[0]
+            return f"atrim=start={start_s:.4f}:end={end_s:.4f},asetpts=PTS-STARTPTS,{base}"
+        parts = [f"asplit={len(windows)}" + "".join(f"[ain{i}]" for i in range(len(windows)))]
+        parts += [
+            f"[ain{i}]atrim=start={start_s:.4f}:end={end_s:.4f},asetpts=PTS-STARTPTS[a{i}]"
+            for i, (start_s, end_s) in enumerate(windows)
+        ]
+        parts.append(
+            "".join(f"[a{i}]" for i in range(len(windows)))
+            + f"concat=n={len(windows)}:v=0:a=1,{base}"
+        )
+        return ";".join(parts)
     if request is None or (request.output_start_s is None and request.output_duration_s is None):
         return base
     start_s, end_s = _output_window(request)
@@ -340,7 +435,18 @@ def export_clip(
     request.destination.parent.mkdir(parents=True, exist_ok=True)
 
     expected_duration_s = request.duration_s
-    if request.output_start_s is not None or request.output_duration_s is not None:
+    if request.removed_ranges:
+        expected_duration_s = sum(
+            end - start
+            for start, end in kept_windows(
+                request.start_s,
+                request.end_s,
+                request.removed_ranges,
+                request.output_start_s,
+                request.output_duration_s,
+            )
+        )
+    elif request.output_start_s is not None or request.output_duration_s is not None:
         out_start_s, out_end_s = _output_window(request)
         expected_duration_s = max(0.001, out_end_s - out_start_s)
 
@@ -397,10 +503,17 @@ def export_clip(
         and request.output_start_s is None
         and request.output_duration_s is None
     ):
+        words = request.words
+        time_offset = request.start_s
+        if request.removed_ranges:
+            words = remap_words(
+                words,
+                request.start_s,
+                kept_windows(request.start_s, request.end_s, request.removed_ranges),
+            )
+            time_offset = 0.0
         captions_module.write_srt(
-            request.destination.with_suffix(".srt"),
-            request.words,
-            time_offset_s=request.start_s,
+            request.destination.with_suffix(".srt"), words, time_offset_s=time_offset
         )
 
     log.info(

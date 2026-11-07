@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import array
+import base64
 import hashlib
 import json
 import math
 import subprocess
+import sys
 import tempfile
 import threading
 from pathlib import Path
@@ -168,3 +171,129 @@ def clip_thumbnail(clip_id: str) -> Response:
     except (OSError, subprocess.CalledProcessError) as exc:
         raise HTTPException(410, "Thumbnail is unavailable for this media.") from exc
     return Response(data, media_type="image/jpeg", headers={"Cache-Control": "no-cache"})
+
+
+@router.get("/clips/{clip_id}/timeline")
+def clip_timeline(clip_id: str) -> dict:
+    """Generate a bounded filmstrip and audio peaks for the visible clip."""
+    clip = store.get_clip(clip_id)
+    if clip is None:
+        raise HTTPException(404, "Clip not found.")
+    job = store.get_job(clip.job_id)
+    source = store.get_source(job.source_id) if job else None
+    if source is None:
+        raise HTTPException(404, "The clip's source is missing.")
+    if not (
+        math.isfinite(clip.start_s)
+        and math.isfinite(clip.end_s)
+        and 0 <= clip.start_s < clip.end_s <= source.duration_s
+        and clip.duration_s <= 600
+    ):
+        raise HTTPException(
+            422, "Timeline requires a clip of at most 10 minutes within the source."
+        )
+    source_path = _source_path(source)
+    stat = source_path.stat()
+    signature = [
+        "timeline-v2",
+        str(source_path),
+        stat.st_dev,
+        stat.st_ino,
+        stat.st_size,
+        stat.st_mtime_ns,
+        stat.st_ctime_ns,
+        clip.start_s,
+        clip.end_s,
+        source.has_video,
+        source.has_audio,
+    ]
+    key = hashlib.sha256(json.dumps(signature).encode()).hexdigest()
+    directory = _no_symlinks(
+        paths.root() / "thumbnails" / "timeline" / hashlib.sha256(clip_id.encode()).hexdigest(),
+        paths.root(),
+    )
+    target = directory / f"{key}.json"
+    cached = _cached(target)
+    if cached:
+        return json.loads(cached)
+    if not _RENDER_SLOT.acquire(blocking=False):
+        raise HTTPException(
+            503, "Timeline renderer is busy. Retry shortly.", headers={"Retry-After": "2"}
+        )
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="timeline-", dir=directory) as tmp:
+            strip = ""
+            common = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-nostdin",
+                "-threads",
+                "1",
+                "-protocol_whitelist",
+                "file,pipe",
+                "-ss",
+                f"{clip.start_s:.6f}",
+                "-t",
+                f"{clip.duration_s:.6f}",
+                "-i",
+                str(source_path),
+            ]
+            if source.has_video:
+                output = Path(tmp) / "strip.jpg"
+                subprocess.run(
+                    common
+                    + [
+                        "-an",
+                        "-sn",
+                        "-dn",
+                        "-vf",
+                        f"fps=12/{clip.duration_s:.6f},scale=120:68,tile=12x1",
+                        "-frames:v",
+                        "1",
+                        "-threads",
+                        "1",
+                        "-y",
+                        str(output),
+                    ],
+                    check=True,
+                    capture_output=True,
+                    timeout=30,
+                )
+                strip = "data:image/jpeg;base64," + base64.b64encode(output.read_bytes()).decode(
+                    "ascii"
+                )
+            peaks = []
+            if source.has_audio:
+                result = subprocess.run(
+                    common
+                    + ["-vn", "-sn", "-dn", "-ac", "1", "-ar", "8000", "-f", "s16le", "pipe:1"],
+                    check=True,
+                    capture_output=True,
+                    timeout=30,
+                )
+                samples = array.array("h")
+                samples.frombytes(result.stdout[: len(result.stdout) // 2 * 2])
+                if sys.byteorder != "little":
+                    samples.byteswap()
+                size = max(1, math.ceil(len(samples) / 240))
+                peaks = [
+                    round(max(abs(x) for x in samples[i : i + size]) / 32768, 4)
+                    for i in range(0, len(samples), size)
+                ]
+            data = {"strip": strip, "peaks": peaks}
+            payload = json.dumps(data).encode()
+            if len(payload) <= _MAX_BYTES:
+                temp = Path(tmp) / "timeline.json"
+                temp.write_bytes(payload)
+                temp.replace(target)
+                for stale in directory.glob("*.json"):
+                    if stale != target:
+                        stale.unlink(missing_ok=True)
+            return data
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise HTTPException(422, "Could not generate timeline media.") from exc
+    finally:
+        _RENDER_SLOT.release()
