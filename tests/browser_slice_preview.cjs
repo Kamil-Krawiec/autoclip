@@ -216,6 +216,7 @@ async function main() {
 
     // 3. Select slice and set Manual mode, adjust zoom and Apply framing
     await button('Slice Manual').click()
+    await button('Edit window').click()
     const cropFrame = page.getByTestId('crop-frame')
     const resizeHandle = page.getByRole('button', { name: 'Resize crop frame' })
     await cropFrame.waitFor()
@@ -244,6 +245,24 @@ async function main() {
     }
     await button('Apply framing').click()
     await eventually(() => assert.equal(edits.length, 4))
+    await cropFrame.waitFor({ state: 'hidden', timeout: 2000 })
+    await page.getByTestId('clip-preview').getAttribute('role').then(role => assert.equal(role, 'button'))
+    if (process.env.AUTOCLIP_TEST_VIDEO) {
+      await page.getByTestId('clip-preview').click()
+      await page.waitForFunction(() => !document.querySelector('video').paused)
+      await page.getByTestId('clip-preview').click()
+    }
+    await button('Edit window').click()
+    await cropFrame.waitFor()
+    const savedFrame = await cropFrame.evaluate(el => ({ left: parseFloat(el.style.left), width: parseFloat(el.style.width) }))
+    await cropFrame.focus()
+    await page.keyboard.press('ArrowLeft')
+    await button('Discard framing changes').click()
+    await cropFrame.waitFor({ state: 'hidden' })
+    await button('Edit window').click()
+    await cropFrame.waitFor()
+    assert.deepEqual(await cropFrame.evaluate(el => ({ left: parseFloat(el.style.left), width: parseFloat(el.style.width) })), savedFrame)
+    await button('Discard framing changes').click()
     assert.equal(edits[3].patch.framing.segments[1].framing.mode, 'manual')
     assert.ok(edits[3].patch.framing.segments[1].framing.zoom > 1.0)
 
@@ -299,6 +318,7 @@ async function main() {
     // 10. Dirty framing / caption draft blocks preview button
     await page.locator('li').filter({ hasText: 'Clip 1' }).click()
     await button('Slice Manual').click()
+    await button('Edit window').click()
     await cropFrame.waitFor()
     await cropFrame.focus()
     await page.keyboard.press('ArrowRight')

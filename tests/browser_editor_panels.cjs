@@ -92,6 +92,7 @@ async function main() {
     await page.getByText('Click any word to correct it').waitFor()
     await panelButton('Framing').click()
     await page.getByRole('button', { name: 'Slice Manual', exact: true }).click()
+    await page.getByRole('button', { name: 'Edit window', exact: true }).click()
     const cropFrame = page.getByTestId('crop-frame')
     await cropFrame.waitFor()
     await cropFrame.focus()

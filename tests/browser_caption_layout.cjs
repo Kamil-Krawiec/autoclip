@@ -86,6 +86,7 @@ async function main() {
     await page.locator('summary', { hasText: 'Advanced / legacy caption layout' }).click()
     await page.locator('summary', { hasText: 'Clips · 2' }).click()
     await slider('Caption horizontal position').waitFor()
+    await button('Edit window').click()
     await cropFrame.waitFor()
     await cropFrame.focus()
     await page.keyboard.press('ArrowRight')
@@ -99,7 +100,7 @@ async function main() {
     assert.deepEqual(edits[1].patch, { burn_captions: false }, 'subtitle PATCH succeeds during framing draft')
     assert.equal(await page.getByRole('status').filter({ hasText: 'Unsaved framing' }).count(), 1)
     await button('Discard framing changes').click()
-    await cropFrame.waitFor()
+    await cropFrame.waitFor({ state: 'hidden' })
     clips[0].caption_style = 'narrow'
     clips[0].burn_captions = true
     await button('Framing').click()

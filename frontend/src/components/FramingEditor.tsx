@@ -43,6 +43,7 @@ export function FramingEditor({
   const draftRef = useRef<ManualFraming>(framing)
   const savedRef = useRef<ManualFraming>(framing)
   const lastPan = useRef(panRequest)
+  const [editing, setEditing] = useState(false)
   const [committing, setCommitting] = useState(false)
 
   savedRef.current = framing
@@ -100,15 +101,15 @@ export function FramingEditor({
   )
 
   useEffect(() => {
-    onDraftGeometry(geometry)
-  }, [geometry, onDraftGeometry])
+    onDraftGeometry(editing ? geometry : null)
+  }, [editing, geometry, onDraftGeometry])
 
   useEffect(() => () => onDraftGeometry(null), [onDraftGeometry])
 
   useEffect(() => {
     if (panRequest === lastPan.current) return
     lastPan.current = panRequest
-    if (!panRequest || disabled || !geometry) return
+    if (!editing || !panRequest || disabled || !geometry) return
     if (panRequest.resize) {
       const delta = Math.abs(panRequest.dx) >= Math.abs(panRequest.dy) ? panRequest.dx : panRequest.dy
       const nextWidth = clamp(geometry.widthNorm + delta * 2, 0.05, 1)
@@ -133,7 +134,9 @@ export function FramingEditor({
       setCommitting(true)
       try {
         const ok = await onCommit(normalized)
-        if (!ok) {
+        if (ok) {
+          setEditing(false)
+        } else {
           draftRef.current = savedRef.current
           setDraft(savedRef.current)
         }
@@ -157,7 +160,7 @@ export function FramingEditor({
       className="space-y-3 border border-ink-800 bg-ink-900/40 p-3"
       aria-label="Manual framing editor"
     >
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
+      {editing ? <><div className="flex flex-wrap items-baseline justify-between gap-2">
         <div>
           <span className="eyebrow">Manual framing</span>
           <p className="mt-0.5 text-xs text-ink-400">
@@ -174,8 +177,8 @@ export function FramingEditor({
       <div className="flex items-center justify-end gap-2 pt-1">
         <button
           type="button"
-          disabled={locked || !isDirty}
-          onClick={() => { draftRef.current = framing; setDraft(framing) }}
+          disabled={locked}
+          onClick={() => { draftRef.current = framing; setDraft(framing); setEditing(false) }}
           className="btn btn-ghost"
         >
           Discard framing changes
@@ -189,6 +192,7 @@ export function FramingEditor({
           {committing ? 'Applying…' : 'Apply framing'}
         </button>
       </div>
+      </> : <button type="button" className="btn btn-ghost" onClick={() => { setDraft(framing); setEditing(true) }}>Edit window</button>}
     </fieldset>
   )
 }
