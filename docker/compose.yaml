@@ -18,6 +18,10 @@ services:
       - ./media:/media:ro
     environment:
       AUTOCLIP_HOME: /data
+      # Optional: the two OpenAI keys can also be added in Settings → Keys,
+      # which persists them on /data. Never bake them into the image.
+      AUTOCLIP_OPENAI_KEY: ${AUTOCLIP_OPENAI_KEY:-}
+      AUTOCLIP_OPENAI_IMAGE_KEY: ${AUTOCLIP_OPENAI_IMAGE_KEY:-}
     restart: unless-stopped
 
   # docker compose --profile gpu up
@@ -36,6 +40,8 @@ services:
     environment:
       AUTOCLIP_HOME: /data
       NVIDIA_VISIBLE_DEVICES: all
+      AUTOCLIP_OPENAI_KEY: ${AUTOCLIP_OPENAI_KEY:-}
+      AUTOCLIP_OPENAI_IMAGE_KEY: ${AUTOCLIP_OPENAI_IMAGE_KEY:-}
     deploy:
       resources:
         reservations:

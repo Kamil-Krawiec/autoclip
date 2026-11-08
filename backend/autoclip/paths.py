@@ -10,12 +10,15 @@ Layout::
       media/            source videos, one directory per source id
       work/<job_id>/    stage intermediates (audio, transcript, crop path)
       exports/          finished clips
+      publish/<id>/     per-publication thumbnail and tcap-compatible short
+      secrets/          YouTube OAuth client and token JSON (mode 600)
       autoclip.db       SQLite database
       config.json       settings (secrets live in the OS keyring)
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 from pathlib import Path
@@ -70,6 +73,20 @@ def exports_dir() -> Path:
     return root() / "exports"
 
 
+def publish_root() -> Path:
+    return root() / "publish"
+
+
+def publish_dir(publication_id: str) -> Path:
+    """Artifacts for one publication: thumbnail, wide JPEG, and short.mp4."""
+    return publish_root() / publication_id
+
+
+def secrets_dir() -> Path:
+    """OAuth client/token files for YouTube uploads. Never committed."""
+    return root() / "secrets"
+
+
 DB_NAME = "autoclip.db"
 LEGACY_DB_NAME = "clipforge.db"
 
@@ -109,6 +126,9 @@ def ensure_layout() -> Path:
     Safe to call repeatedly; used on startup and at the top of each CLI command.
     """
     base = root()
-    for path in (base, media_dir(), work_dir(), exports_dir()):
+    for path in (base, media_dir(), work_dir(), exports_dir(), publish_root(), secrets_dir()):
         path.mkdir(parents=True, exist_ok=True)
+    # OAuth files are written 600 individually; keep the directory private too.
+    with contextlib.suppress(OSError):
+        secrets_dir().chmod(0o700)
     return base

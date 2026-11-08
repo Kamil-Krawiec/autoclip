@@ -6,6 +6,7 @@ import { ErrorNote } from '../components/ErrorNote'
 const SECRET_LABELS: Record<string, string> = {
   anthropic: 'Anthropic API key',
   openai: 'OpenAI-compatible API key',
+  openai_image: 'OpenAI Images API key',
   gemini: 'Google Gemini API key',
   huggingface_token: 'HuggingFace token',
 }
@@ -269,6 +270,82 @@ export function Settings() {
         </label>
       </Section>
 
+      <Section
+        title="Publishing"
+        note="Metadata and thumbnail generation for the optional Publish page."
+      >
+        <div className="grid gap-5 sm:grid-cols-2">
+          <Select
+            label="Metadata provider"
+            hint="“Use active provider” also follows that provider's configured model."
+            value={settings.publish.metadata_provider}
+            onChange={(value) =>
+              patch({
+                publish: {
+                  ...settings.publish,
+                  metadata_provider: value,
+                  metadata_model:
+                    value === '' ? '' : settings.providers[value]?.model || 'gpt-6-luna',
+                },
+              })
+            }
+            options={['', ...providers.map((provider) => provider.name)]}
+            labels={{ '': 'Use active provider' }}
+          />
+          <Field
+            label="Metadata model"
+            hint={
+              settings.publish.metadata_provider
+                ? 'Defaults to gpt-6-luna on OpenAI.'
+                : 'Ignored while the active provider is selected.'
+            }
+            value={settings.publish.metadata_model}
+            placeholder="gpt-6-luna"
+            disabled={settings.publish.metadata_provider === ''}
+            onCommit={(value) =>
+              patch({ publish: { ...settings.publish, metadata_model: value } })
+            }
+          />
+        </div>
+        <div className="mt-5 grid gap-5 sm:grid-cols-2">
+          <Field
+            label="Image model"
+            hint="Thumbnails always use the OpenAI Images API and the separate image key."
+            value={settings.publish.image_model}
+            placeholder="gpt-image-2.5-flare"
+            onCommit={(value) =>
+              patch({ publish: { ...settings.publish, image_model: value } })
+            }
+          />
+          <Select
+            label="Image quality"
+            value={settings.publish.image_quality}
+            onChange={(value) =>
+              patch({ publish: { ...settings.publish, image_quality: value } })
+            }
+            options={['low', 'medium', 'high']}
+          />
+          <Select
+            label="Default privacy"
+            hint="Set at upload; change it later in YouTube Studio."
+            value={settings.publish.default_privacy}
+            onChange={(value) =>
+              patch({ publish: { ...settings.publish, default_privacy: value } })
+            }
+            options={['private', 'unlisted', 'public']}
+          />
+          <Field
+            label="YouTube category ID"
+            hint="28 is Science & Technology."
+            value={settings.publish.category_id}
+            placeholder="28"
+            onCommit={(value) =>
+              patch({ publish: { ...settings.publish, category_id: value } })
+            }
+          />
+        </div>
+      </Section>
+
       {system && (
         <Section title="This machine">
           <dl className="grid gap-x-8 gap-y-3 text-sm sm:grid-cols-2">
@@ -322,12 +399,14 @@ function Field({
   hint,
   value,
   placeholder,
+  disabled = false,
   onCommit,
 }: {
   label: string
   hint?: string
   value: string
   placeholder?: string
+  disabled?: boolean
   onCommit: (value: string) => void
 }) {
   const [draft, setDraft] = useState(value)
@@ -340,8 +419,9 @@ function Field({
         className="field mt-1 text-sm"
         value={draft}
         placeholder={placeholder}
+        disabled={disabled}
         onChange={(e) => setDraft(e.target.value)}
-        onBlur={() => draft !== value && onCommit(draft)}
+        onBlur={() => !disabled && draft !== value && onCommit(draft)}
         onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
         spellCheck={false}
       />

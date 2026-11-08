@@ -48,6 +48,9 @@ desktop.ini
 .env
 .env.*
 !.env.example
+# OAuth client/token files. The default location is outside the repo, but a
+# local AUTOCLIP_HOME used for development may point here.
+secrets/
 
 # Markdown notes and agent progress stay local.
 *.[mM][dD]

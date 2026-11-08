@@ -52,11 +52,18 @@ def provider_names() -> list[str]:
     return list(PROVIDERS)
 
 
-def build_provider(name: str | None = None, settings: Settings | None = None) -> LLMProvider:
+def build_provider(
+    name: str | None = None,
+    settings: Settings | None = None,
+    *,
+    model: str | None = None,
+) -> LLMProvider:
     """Construct a configured provider.
 
     Pulls the model and base URL from settings and the API key from the keyring,
-    so callers never handle secrets themselves.
+    so callers never handle secrets themselves. ``model`` overrides the saved
+    model for one call without mutating settings — the Publish flow needs a
+    different text model than clip selection.
     """
     from ..config import load
 
@@ -74,7 +81,7 @@ def build_provider(name: str | None = None, settings: Settings | None = None) ->
     api_key = get_secret(key, settings) if provider_cls.requires_key else None
 
     return provider_cls(
-        provider_settings.model,
+        model or provider_settings.model,
         api_key=api_key,
         base_url=provider_settings.base_url,
     )

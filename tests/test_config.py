@@ -57,6 +57,50 @@ def test_unknown_provider_key_is_created_on_demand() -> None:
     assert "some-future-vendor" in settings.providers
 
 
+def test_publish_defaults() -> None:
+    publish = config.load().publish
+
+    assert publish.metadata_provider == "openai"
+    assert publish.metadata_model == "gpt-6-luna"
+    assert publish.image_model == "gpt-image-2.5-flare"
+    assert publish.image_size == "1080x1920"
+    assert publish.image_quality == "high"
+    assert publish.default_privacy == "private"
+    assert publish.tcap_duration_s == pytest.approx(0.15)
+
+
+def test_publish_settings_round_trip() -> None:
+    settings = config.load()
+    settings.publish.metadata_provider = ""
+    settings.publish.image_model = "gpt-image-2"
+    settings.publish.default_privacy = "unlisted"
+    config.save(settings)
+
+    reloaded = config.load()
+    assert reloaded.publish.metadata_provider == ""
+    assert reloaded.publish.image_model == "gpt-image-2"
+    assert reloaded.publish.default_privacy == "unlisted"
+
+
+def test_publish_settings_reject_bad_size_and_duration() -> None:
+    with pytest.raises(ValueError, match="WIDTHxHEIGHT"):
+        config.PublishSettings(image_size="1080x")
+    with pytest.raises(ValueError, match="tcap_duration_s"):
+        config.PublishSettings(tcap_duration_s=2.0)
+
+
+def test_openai_image_secret_uses_its_own_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "_keyring", lambda: None)
+    monkeypatch.setenv("AUTOCLIP_OPENAI_IMAGE_KEY", "sk-image")
+    monkeypatch.delenv("AUTOCLIP_OPENAI_KEY", raising=False)
+
+    assert config.get_secret(config.OPENAI_IMAGE_KEY) == "sk-image"
+    # The LLM key is a different secret and must not see the image value.
+    assert config.get_secret("openai") is None
+
+
 def test_save_is_atomic_leaving_no_temp_file() -> None:
     config.save(config.load())
 
