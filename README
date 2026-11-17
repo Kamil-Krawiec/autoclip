@@ -193,6 +193,13 @@ Fit or Manual framing. **Merge with next slice** keeps the selected slice's
 framing. Cuts stay anchored to the source when trimming and expanding again.
 Choosing a global framing mode replaces the slices.
 
+The timeline shows source thumbnails, audio waveform and a time ruler. Use Space
+to play or pause, and the arrow keys to step while paused. Zoom and scroll to
+place the playhead precisely; move a slice boundary to the playhead when needed.
+Select a slice and choose **Remove section** to skip its video and audio; use
+**Restore** to bring it back. Removed sections remain visible and the original
+source is preserved. Timeline media generation is limited to clips of 10 minutes.
+
 **Render exact preview** renders up to three seconds from the playhead using the
 saved FFmpeg/ASS settings. Save or discard drafts first. This preview has the
 export's framing and caption rendering; it does not add an export to history.

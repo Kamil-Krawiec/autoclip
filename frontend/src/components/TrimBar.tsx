@@ -15,6 +15,7 @@ export function TrimBar({
   endS,
   originalStart,
   originalEnd,
+  sourceDuration,
   onCommit,
   disabled,
   children,
@@ -24,6 +25,7 @@ export function TrimBar({
   endS: number
   originalStart: number
   originalEnd: number
+  sourceDuration?: number
   onCommit: (start: number, end: number) => void
   disabled: boolean
   children: ReactNode
@@ -38,8 +40,9 @@ export function TrimBar({
   }, [disabled, startS, endS])
 
   // Padding either side so a trim can be widened as well as tightened.
-  const windowStart = originalStart - 5
-  const windowEnd = originalEnd + 5
+  const padding = Math.min(5, Math.max(0.5, (endS - startS) * 0.2))
+  const windowStart = Math.max(0, originalStart - padding)
+  const windowEnd = sourceDuration && sourceDuration > 0 ? Math.min(sourceDuration, originalEnd + padding) : originalEnd + padding
   const span = Math.max(0.1, windowEnd - windowStart)
 
   const toFraction = (t: number) => (t - windowStart) / span
@@ -114,7 +117,7 @@ export function TrimBar({
         </span>
       </div>
 
-      <div ref={track} className="relative mt-3 h-14 cursor-ew-resize bg-ink-850">
+      <div ref={track} className="relative mt-3 h-24 cursor-ew-resize bg-ink-850">
         <div
           className="absolute inset-y-0"
           style={{ left: `${left * 100}%`, right: `${(1 - right) * 100}%` }}

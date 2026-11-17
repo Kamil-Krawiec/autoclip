@@ -147,6 +147,15 @@ async def patch_clip(clip_id: str, payload: ClipPatchIn) -> ClipOut:
     start_word = end_word = None
 
     if trimmed:
+        job = await asyncio.to_thread(store.get_job, clip.job_id)
+        source = await asyncio.to_thread(store.get_source, job.source_id) if job else None
+        if source is None:
+            raise HTTPException(status_code=404, detail="The clip's source is missing.")
+        if source.duration_s > 0 and end_s > source.duration_s:
+            raise HTTPException(status_code=400, detail="Trim exceeds the source duration.")
+        edit = await asyncio.to_thread(store.get_clip_edit, clip_id)
+        if edit and not export_module.kept_windows(start_s, end_s, edit.removed_ranges):
+            raise HTTPException(status_code=400, detail="At least part of the clip must remain.")
         transcript = await asyncio.to_thread(_load_transcript, clip.job_id)
         first, last = transcript.indices_in_range(start_s, end_s)
         start_word, end_word = first, max(first, last - 1)
@@ -202,6 +211,24 @@ async def _save_edit(clip, payload: CaptionPatchIn) -> ClipOut:
             validate_framing_bounds(changes["framing"], source.duration_s)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if changes.get("removed_ranges") is not None:
+        ranges = changes["removed_ranges"]
+        job = await asyncio.to_thread(store.get_job, clip.job_id)
+        source = await asyncio.to_thread(store.get_source, job.source_id) if job else None
+        if source is None:
+            raise HTTPException(status_code=404, detail="The clip's source is missing.")
+        previous_end = 0.0
+        covered = 0.0
+        for item in ranges:
+            if item["start_s"] < previous_end or item["end_s"] > source.duration_s:
+                raise HTTPException(
+                    status_code=400, detail="Removed ranges overlap or exceed the source."
+                )
+            previous_end = item["end_s"]
+            covered += max(0.0, min(item["end_s"], clip.end_s) - max(item["start_s"], clip.start_s))
+        if covered >= clip.duration_s - 1e-6:
+            raise HTTPException(status_code=400, detail="At least part of the clip must remain.")
 
     if "caption_overrides" in changes and changes["caption_overrides"] is not None:
         raw_overrides = changes["caption_overrides"]
@@ -279,6 +306,7 @@ async def _prepare_saved_render(
         style=style,
         ratio=ratio,
         burn_captions=edit.burn_captions,
+        removed_ranges=edit.removed_ranges,
         output_start_s=output_start_s,
         output_duration_s=output_duration_s,
     )
@@ -356,6 +384,12 @@ async def preview_clip(clip_id: str, payload: PreviewRequestIn | None = None) ->
     clamped_duration = min(params.duration_s, max(0.0, clip.duration_s - params.start_s))
     if clamped_duration <= 0:
         raise HTTPException(status_code=400, detail="Preview start is outside the clip.")
+
+    edit = await asyncio.to_thread(store.get_clip_edit, clip_id)
+    if edit and not export_module.kept_windows(
+        clip.start_s, clip.end_s, edit.removed_ranges, params.start_s, clamped_duration
+    ):
+        raise HTTPException(status_code=400, detail="This preview contains only removed footage.")
 
     if not _PREVIEW_LOCK.acquire(blocking=False):
         raise HTTPException(

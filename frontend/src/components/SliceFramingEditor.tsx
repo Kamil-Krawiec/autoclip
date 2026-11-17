@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 
 import {
   formatTimecode,
+  api,
   type CropPath,
   type FramingSlice,
   type ManualFraming,
@@ -118,8 +119,11 @@ export function SliceFramingEditor({
   cropPath,
   sourceWidth,
   sourceHeight,
+  sourceDuration,
   hasVideoSource,
   playheadSourceS,
+  removedRanges,
+  onCommitRemoved,
   disabled,
   framingDirty,
   onDirtyChange,
@@ -139,8 +143,11 @@ export function SliceFramingEditor({
   cropPath: CropPath | null
   sourceWidth: number
   sourceHeight: number
+  sourceDuration?: number
   hasVideoSource: boolean
   playheadSourceS: number
+  removedRanges: { start_s: number; end_s: number }[]
+  onCommitRemoved: (ranges: { start_s: number; end_s: number }[]) => Promise<boolean>
   disabled: boolean
   framingDirty: boolean
   onDirtyChange: (dirty: boolean) => void
@@ -158,6 +165,20 @@ export function SliceFramingEditor({
     [slicesFraming.segments, clipStartS, clipEndS],
   )
   const [selectedIndex, setSelectedIndex] = useState(0)
+  const [zoom, setZoom] = useState(1)
+  const [visuals, setVisuals] = useState<{ strip: string; peaks: number[] } | null>(null)
+  const [visualError, setVisualError] = useState(false)
+  const [visualRetry, setVisualRetry] = useState(0)
+
+  useEffect(() => {
+    const abort = new AbortController()
+    setVisuals(null)
+    setVisualError(false)
+    api.getTimeline(clipId, abort.signal).then(setVisuals).catch(() => {
+      if (!abort.signal.aborted) setVisualError(true)
+    })
+    return () => abort.abort()
+  }, [clipId, clipStartS, clipEndS, visualRetry])
   const timelinePointerStart = useRef<{ id: number; x: number; y: number } | null>(null)
   const suppressTimelineClick = useRef(false)
 
@@ -305,6 +326,41 @@ export function SliceFramingEditor({
     await onCommitSlices({ mode: 'slices', segments: nextSegments })
   }
 
+  const selectedIsRemoved = activeEntry && removedRanges.some(range => range.start_s <= activeEntry.visStartS + EPSILON && range.end_s >= activeEntry.visEndS - EPSILON)
+
+  const toggleRemoved = async () => {
+    if (!activeEntry) return
+    const { visStartS: start, visEndS: end } = activeEntry
+    const next = selectedIsRemoved
+      ? removedRanges.flatMap(range => range.end_s <= start || range.start_s >= end ? [range] : [
+          ...(range.start_s < start ? [{ start_s: range.start_s, end_s: start }] : []),
+          ...(range.end_s > end ? [{ start_s: end, end_s: range.end_s }] : []),
+        ])
+      : [...removedRanges, { start_s: start, end_s: end }].sort((a, b) => a.start_s - b.start_s).reduce<{ start_s: number; end_s: number }[]>((result, range) => {
+          const last = result[result.length - 1]
+          if (last && range.start_s <= last.end_s) last.end_s = Math.max(last.end_s, range.end_s)
+          else result.push({ ...range })
+          return result
+        }, [])
+    await onCommitRemoved(next)
+  }
+
+  const moveBoundaryToPlayhead = async () => {
+    const next = segments[activeIndex + 1]
+    if (!activeSlice || !next || playheadSourceS <= activeSlice.start_s + MIN_SLICE_DURATION_S || playheadSourceS >= next.end_s - MIN_SLICE_DURATION_S) return
+    await onCommitSlices({ mode: 'slices', segments: segments.map((segment, index) => index === activeIndex
+      ? { ...segment, end_s: playheadSourceS }
+      : index === activeIndex + 1 ? { ...segment, start_s: playheadSourceS } : segment) })
+  }
+
+  const movePreviousBoundaryToPlayhead = async () => {
+    const previous = segments[activeIndex - 1]
+    if (!activeSlice || !previous || playheadSourceS <= previous.start_s + MIN_SLICE_DURATION_S || playheadSourceS >= activeSlice.end_s - MIN_SLICE_DURATION_S) return
+    await onCommitSlices({ mode: 'slices', segments: segments.map((segment, index) => index === activeIndex - 1
+      ? { ...segment, end_s: playheadSourceS }
+      : index === activeIndex ? { ...segment, start_s: playheadSourceS } : segment) })
+  }
+
   const handleChangeSelectedMode = async (nextMode: 'auto' | 'fit' | 'manual' | 'split') => {
     if (disabled || framingDirty || !activeSlice) return
     if (activeSlice.framing.mode === nextMode) return
@@ -377,6 +433,7 @@ export function SliceFramingEditor({
     }
   }, [activeSlice, cropPath, sourceWidth, sourceHeight, clipStartS, ratio])
 
+  const waveformMax = Math.max(0.01, ...(visuals?.peaks ?? []))
   const playheadRelS = Math.max(0, playheadSourceS - clipStartS)
   const clipDurationS = Math.max(EPSILON, clipEndS - clipStartS)
   const playheadPct = clamp01(playheadRelS / clipDurationS) * 100
@@ -428,10 +485,18 @@ export function SliceFramingEditor({
     <div
       className="space-y-4 border border-ink-800 bg-ink-900/40 p-3"
       aria-label="Per-slice framing editor"
+      onClickCapture={(event) => {
+        if (event.detail > 0 && event.target instanceof HTMLElement) event.target.closest('button')?.blur()
+      }}
     >
+      <div className="flex items-center justify-between text-xs text-ink-300">
+        <span>{visualError ? <button type="button" onClick={() => setVisualRetry(value => value + 1)}>Timeline media unavailable · Retry</button> : visuals ? 'Scroll to explore the timeline' : 'Loading timeline media…'}</span>
+        <label>Zoom <input aria-label="Timeline zoom" type="range" min="1" max="8" step="1" value={zoom} onChange={event => setZoom(Number(event.target.value))} /></label>
+      </div>
       <TrimBar words={words} startS={clipStartS} endS={clipEndS}
-        originalStart={clipStartS} originalEnd={clipEndS} onCommit={onTrim}
+        originalStart={clipStartS} originalEnd={clipEndS} sourceDuration={sourceDuration} onCommit={onTrim}
         disabled={disabled || framingDirty}>
+      <div className="h-full w-full overflow-x-auto">
       <div
         role="group"
         aria-label="Framing slices"
@@ -451,10 +516,15 @@ export function SliceFramingEditor({
           timelinePointerStart.current = null
           suppressTimelineClick.current = false
         }}
-        style={{ touchAction: 'none' }}
+        style={{ touchAction: 'none', width: `${zoom * 100}%` }}
         className="relative h-full"
       >
-        <div className="flex h-full w-full divide-x divide-ink-800 overflow-hidden border border-ink-800 bg-ink-900/60">
+        <div aria-label="Timeline time ruler" className="pointer-events-none absolute inset-x-0 top-0 z-[3] flex justify-between bg-black/60 px-1 text-[10px] text-white">
+          <span>0:00</span><span>{formatTimecode(clipDurationS / 2)}</span><span>{formatTimecode(clipDurationS)}</span>
+        </div>
+        {visuals?.strip && <img aria-label="Video thumbnails" className="absolute inset-x-0 top-0 h-1/2 w-full object-fill" src={visuals.strip} />}
+        {visuals && visuals.peaks.length > 0 && <svg aria-label="Audio waveform" className="pointer-events-none absolute inset-x-0 bottom-0 z-[1] h-1/2 w-full bg-ink-900" viewBox={`0 0 ${visuals.peaks.length} 100`} preserveAspectRatio="none">{visuals.peaks.map((peak, index) => <line key={index} x1={index + 0.5} x2={index + 0.5} y1={50 - peak / waveformMax * 45} y2={50 + peak / waveformMax * 45} stroke="#f7b65a" strokeOpacity="0.9" strokeWidth="0.65" />)}</svg>}
+        <div className="relative flex h-full w-full divide-x divide-ink-800 overflow-hidden border border-ink-800">
           {visibleSlices.map((entry, visIdx) => {
             const widthPct =
               clamp01((entry.visEndS - entry.visStartS) / clipDurationS) * 100
@@ -474,7 +544,7 @@ export function SliceFramingEditor({
                   'flex min-w-0 items-center justify-center overflow-hidden text-center text-[10px] leading-tight transition-colors',
                   isSelected
                     ? 'bg-sodium-500/25 text-ink-100 ring-1 ring-inset ring-sodium-500'
-                    : 'bg-ink-900/60 text-ink-300 hover:bg-ink-850/60',
+                    : 'bg-ink-900/25 text-ink-100 hover:bg-ink-850/40',
                 ].join(' ')}
                 style={{ width: `${widthPct}%` }}
               >
@@ -485,6 +555,11 @@ export function SliceFramingEditor({
             )
           })}
         </div>
+        {removedRanges.map((range, index) => {
+          const left = clamp01((range.start_s - clipStartS) / clipDurationS) * 100
+          const right = clamp01((range.end_s - clipStartS) / clipDurationS) * 100
+          return right > left ? <div key={index} aria-label="Removed section" className="pointer-events-none absolute inset-y-0 z-[2] bg-red-900/60" style={{ left: `${left}%`, width: `${right - left}%` }} /> : null
+        })}
         {playheadVisible && (
           <div
             aria-hidden="true"
@@ -508,6 +583,7 @@ export function SliceFramingEditor({
           </div>
         )}
       </div>
+      </div>
       </TrimBar>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -520,6 +596,15 @@ export function SliceFramingEditor({
         >
           ✂ Split
         </button>
+        <button type="button" className="btn btn-ghost text-xs" disabled={disabled || framingDirty || !activeEntry} onClick={() => void toggleRemoved()}>
+          {selectedIsRemoved ? 'Restore section' : 'Remove section'}
+        </button>
+        <button type="button" className="btn btn-ghost text-xs" disabled={disabled || framingDirty || activeIndex === 0} onClick={() => void movePreviousBoundaryToPlayhead()}>
+          Move previous boundary to playhead
+        </button>
+        <button type="button" className="btn btn-ghost text-xs" disabled={disabled || framingDirty || !canMergeWithNext} onClick={() => void moveBoundaryToPlayhead()}>
+          Move next boundary to playhead
+        </button>
         <button
           type="button"
           disabled={disabled || framingDirty || !canMergeWithNext}
@@ -531,6 +616,9 @@ export function SliceFramingEditor({
         </button>
       </div>
 
+      {removedRanges.length > 0 && <div className="flex flex-wrap gap-2" aria-label="Removed sections">
+        {removedRanges.map((range, index) => <button key={`${range.start_s}-${range.end_s}`} type="button" className="btn btn-ghost text-xs" disabled={disabled || framingDirty} onClick={() => void onCommitRemoved(removedRanges.filter((_, i) => i !== index))}>Restore {formatTimecode(range.start_s - clipStartS)} – {formatTimecode(range.end_s - clipStartS)}</button>)}
+      </div>}
       {activeSlice && activeEntry && (
         <div className="space-y-3 border-t border-ink-800 pt-3">
           <p className="text-xs text-ink-300">

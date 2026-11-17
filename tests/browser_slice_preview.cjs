@@ -140,6 +140,17 @@ async function main() {
     // The timeline is available immediately without changing an existing edit.
     await page.getByRole('button', { name: /^Slice 1:/ }).waitFor()
     assert.equal(edits.length, 0)
+    if (process.env.AUTOCLIP_TEST_VIDEO) {
+      await page.waitForFunction(() => document.querySelector('video')?.readyState >= 2)
+      await page.locator('body').click({ position: { x: 2, y: 2 } })
+      await page.keyboard.press('Space')
+      await page.waitForFunction(() => !document.querySelector('video').paused)
+      await page.keyboard.press('Space')
+      await page.waitForFunction(() => document.querySelector('video').paused)
+      const beforeStep = await page.locator('video').first().evaluate(el => el.currentTime)
+      await page.keyboard.press('ArrowRight')
+      await page.waitForFunction(value => document.querySelector('video').currentTime > value, beforeStep)
+    }
     // 1. Enable per-slice framing
     await button('Framing').click()
     await page.getByText('Whole clip framing', { exact: true }).click()
@@ -161,6 +172,18 @@ async function main() {
     assert.equal(twoSlices.length, 2)
     assert.equal(twoSlices[0].end_s, 4.0)
     assert.equal(twoSlices[1].start_s, 4.0)
+
+    // Removed sections are saved separately and can be restored without changing slices.
+    await page.getByRole('button', { name: /^Slice 1:/ }).click({ position: { x: 8, y: 20 } })
+    await button('Remove section').click()
+    await eventually(() => assert.equal(edits.length, 3))
+    assert.deepEqual(edits[2].patch.removed_ranges, [{ start_s: 0, end_s: 4 }])
+    await page.getByLabel('Removed section', { exact: true }).waitFor()
+    await button('Restore section').click()
+    await eventually(() => assert.equal(edits.length, 4))
+    assert.deepEqual(edits[3].patch.removed_ranges, [])
+    assert.equal(clips[0].framing.segments.length, 2)
+    edits.length = 2
 
     // A timeline click selects the part and seeks the actual player without saving.
     const firstSlice = page.getByRole('button', { name: /^Slice 1:/ })

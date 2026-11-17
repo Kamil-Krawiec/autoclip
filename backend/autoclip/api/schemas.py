@@ -249,6 +249,7 @@ class ClipOut(BaseModel):
     burn_captions: bool = True
     framing: FramingIn | None = None
     caption_overrides: dict[str, float] | None = None
+    removed_ranges: list[dict[str, float]] = Field(default_factory=list)
     exports: list[ExportOut] = Field(default_factory=list)
 
     @classmethod
@@ -279,6 +280,7 @@ class ClipOut(BaseModel):
             burn_captions=edit.burn_captions if edit else True,
             framing=edit.framing if edit else None,
             caption_overrides=edit.caption_overrides if edit else None,
+            removed_ranges=edit.removed_ranges if edit else [],
             exports=[ExportOut.of(e) for e in (exports or [])],
         )
 
@@ -311,11 +313,24 @@ class CaptionOverridesIn(BaseModel):
     )
 
 
+class RemovedRangeIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    start_s: float = Field(ge=0, allow_inf_nan=False)
+    end_s: float = Field(gt=0, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def validate_bounds(self):
+        if self.end_s <= self.start_s:
+            raise ValueError("Range end must follow start.")
+        return self
+
+
 class EditPatchIn(CaptionPatchIn):
     model_config = ConfigDict(extra="forbid")
     burn_captions: bool = True
     framing: FramingIn | None = None
     caption_overrides: CaptionOverridesIn | None = None
+    removed_ranges: list[RemovedRangeIn] | None = Field(default=None, max_length=100)
 
 
 class ExportRequestIn(BaseModel):
