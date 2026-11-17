@@ -61,6 +61,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+mcp = ["mcp>=1.0,<2"]
 # Speaker diarization. Pulls torch + pyannote (large). Requires a HuggingFace
 # token and acceptance of the gated pyannote model licenses.
 diarization = [
@@ -93,6 +94,7 @@ Issues = "https://github.com/Kamil-Krawiec/autoclip/issues"
 
 [project.scripts]
 autoclip = "autoclip.cli:app"
+autoclip-mcp = "autoclip.mcp_server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["backend/autoclip"]

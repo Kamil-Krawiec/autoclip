@@ -280,3 +280,26 @@ AutoClip bundles [yt-dlp](https://github.com/yt-dlp/yt-dlp). **Only download con
 ## License
 
 MIT — see [LICENSE](LICENSE). Bundled fonts (Anton, Inter) are under the SIL Open Font License.
+
+## Local MCP adapter
+
+Install the optional dependency with `pip install .[mcp]` and run `autoclip-mcp`
+using stdio. It connects to `http://127.0.0.1:9879` by default; set
+`AUTOCLIP_API_URL` to another explicit loopback HTTP origin if needed.
+Example local client configuration:
+
+```json
+{"mcpServers": {"autoclip": {"command": "autoclip-mcp", "args": []}}}
+```
+
+For SSH, install AutoClip with the MCP extra on the server and configure:
+
+```json
+{"mcpServers": {"autoclip": {"command": "ssh", "args": ["kamil@server", "autoclip-mcp"]}}}
+```
+
+Source, clip and output times are distinct: source timestamps are absolute,
+clip time is relative to the uncut clip, and output time joins retained windows.
+Trim, words, slices and removed ranges use source time. Export revision matching
+is unknown; visual inspection is unavailable. Job processing or retry can incur
+provider costs and requires explicit consent through the tool argument.
