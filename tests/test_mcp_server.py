@@ -71,8 +71,13 @@ def test_supported_operations_and_errors():
     client.get_job("job")
     assert client.list_clips("job")[0]["exports"][0]["matches_current_edit"] == "unknown"
     client.get_words("clip")
-    client.trim_clip("clip", 1, 4)
-    client.edit_clip("clip", {"removed_ranges": [{"start_s": 2, "end_s": 3}]})
+    assert client.trim_clip("clip", 1, 4)["exports"][0]["matches_current_edit"] == "unknown"
+    assert (
+        client.edit_clip("clip", {"removed_ranges": [{"start_s": 2, "end_s": 3}]})["exports"][0][
+            "matches_current_edit"
+        ]
+        == "unknown"
+    )
     assert client.export_clip("clip", {})["matches_current_edit"] == "unknown"
     assert calls == [
         ("GET", "/api/sources/src"),
@@ -168,7 +173,10 @@ def test_validation_and_export_status():
     client.retry_job("j", allow_paid=True)
     client.crop_path("c")
     client.caption_styles()
-    client.update_clip("c", {"status": "kept"})
+    assert (
+        client.update_clip("c", {"status": "kept"})["exports"][0]["matches_current_edit"]
+        == "unknown"
+    )
     assert [r.url.path for r in calls] == [
         "/api/clips/c",
         "/api/jobs/j/retry",
@@ -176,3 +184,90 @@ def test_validation_and_export_status():
         "/api/caption-styles",
         "/api/clips/c",
     ]
+
+
+def test_inspection_fixed_endpoints():
+    import httpx
+    from autoclip.mcp_server import AutoClipClient
+
+    calls = []
+    client = AutoClipClient(
+        "http://localhost:9879",
+        transport=httpx.MockTransport(
+            lambda request: (
+                calls.append((request.method, request.url.path)) or httpx.Response(200, json={})
+            )
+        ),
+    )
+    for operation in ("revision", "frames", "contact-sheet", "analyze-screen"):
+        client.inspect("clip", operation, {} if operation != "revision" else None)
+    with pytest.raises(ValueError):
+        client.inspect("clip", "../../settings")
+    assert calls == [("GET", "/api/clips/clip/inspection/revision")] + [
+        ("POST", f"/api/clips/clip/inspection/{op}")
+        for op in ("frames", "contact-sheet", "analyze-screen")
+    ]
+
+
+def test_stdio_long_export_does_not_block_ping_or_jobs():
+    import asyncio
+    import os
+    import sys
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+
+    started, release = threading.Event(), threading.Event()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            started.set()
+            release.wait(5)
+            self.reply(b"{}")
+
+        def do_GET(self):
+            self.reply(b"[]")
+
+        def reply(self, body):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    async def run():
+        params = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "autoclip.mcp_server"],
+            env={**os.environ, "AUTOCLIP_API_URL": f"http://127.0.0.1:{server.server_port}"},
+        )
+        async with stdio_client(params) as (read, write):  # noqa: SIM117
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                task = asyncio.create_task(
+                    session.call_tool("export", {"clip_id": "c", "options": {}})
+                )
+                try:
+                    assert await asyncio.to_thread(started.wait, 3)
+                    await asyncio.wait_for(session.send_ping(), 2)
+                    result = await asyncio.wait_for(session.call_tool("jobs", {}), 2)
+                    assert not result.isError
+                finally:
+                    release.set()
+                assert not (await task).isError
+
+    try:
+        asyncio.run(run())
+    finally:
+        release.set()
+        server.shutdown()
+        server.server_close()
+        thread.join()

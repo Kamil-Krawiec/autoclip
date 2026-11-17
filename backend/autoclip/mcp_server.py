@@ -116,7 +116,9 @@ class AutoClipClient:
     def update_clip(self, clip_id, changes):
         if not isinstance(changes, dict) or not set(changes) <= {"title", "status"}:
             raise ValueError("Unsupported clip field")
-        return self.request("PATCH", f"/api/clips/{self.identifier(clip_id)}", body=changes)
+        return self.mark_exports_unknown(
+            self.request("PATCH", f"/api/clips/{self.identifier(clip_id)}", body=changes)
+        )
 
     def get_words(self, clip_id):
         return self.request("GET", f"/api/clips/{self.identifier(clip_id)}/words")
@@ -127,13 +129,12 @@ class AutoClipClient:
             for x in (start_s, end_s)
         ):
             raise ValueError("Trim boundaries must be finite numbers")
-        return self.request(
-            "PATCH",
-            f"/api/clips/{self.identifier(clip_id)}",
-            body={
-                "start_s": start_s,
-                "end_s": end_s,
-            },
+        return self.mark_exports_unknown(
+            self.request(
+                "PATCH",
+                f"/api/clips/{self.identifier(clip_id)}",
+                body={"start_s": start_s, "end_s": end_s},
+            )
         )
 
     def edit_clip(self, clip_id, edit):
@@ -148,7 +149,25 @@ class AutoClipClient:
         }
         if not isinstance(edit, dict) or not set(edit) <= allowed:
             raise ValueError("Unsupported edit field")
-        return self.request("PATCH", f"/api/clips/{self.identifier(clip_id)}/edit", body=edit)
+        return self.mark_exports_unknown(
+            self.request("PATCH", f"/api/clips/{self.identifier(clip_id)}/edit", body=edit)
+        )
+
+    def inspect(self, clip_id, operation, options=None):
+        endpoints = {
+            "revision": "GET",
+            "frames": "POST",
+            "contact-sheet": "POST",
+            "analyze-screen": "POST",
+        }
+        if operation not in endpoints:
+            raise ValueError("Unsupported inspection operation")
+        return self.request(
+            endpoints[operation],
+            f"/api/clips/{self.identifier(clip_id)}/inspection/{operation}",
+            body=options,
+            timeout=1800.0,
+        )
 
     def export_clip(self, clip_id, options):
         if not isinstance(options, dict) or not set(options) <= {"ratio", "style", "write_srt"}:
@@ -267,9 +286,28 @@ def main():
         return await anyio.to_thread.run_sync(partial(client.export_clip, clip_id, options))
 
     @server.tool()
-    def inspection_availability() -> dict:
-        """Report availability of frame and screen inspection."""
-        return {"available": False, "reason": "Visual inspection is not integrated"}
+    async def inspection_revision(clip_id: str) -> dict:
+        """Get current revision and export freshness; legacy exports remain unknown."""
+        return await anyio.to_thread.run_sync(partial(client.inspect, clip_id, "revision"))
+
+    @server.tool()
+    async def inspection_frames(clip_id: str, options: dict) -> dict:
+        """Inspect frames; timeline is source, clip, or retained output seconds."""
+        return await anyio.to_thread.run_sync(partial(client.inspect, clip_id, "frames", options))
+
+    @server.tool()
+    async def inspection_contact_sheet(clip_id: str, options: dict) -> dict:
+        """Inspect a contact sheet; timeline is source, clip, or retained output seconds."""
+        return await anyio.to_thread.run_sync(
+            partial(client.inspect, clip_id, "contact-sheet", options)
+        )
+
+    @server.tool()
+    async def inspection_analyze_screen(clip_id: str, options: dict) -> dict:
+        """Get advisory CPU screen and framing analysis; fit blur is uncertain."""
+        return await anyio.to_thread.run_sync(
+            partial(client.inspect, clip_id, "analyze-screen", options)
+        )
 
     server.run(transport="stdio")
 

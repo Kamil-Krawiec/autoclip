@@ -300,6 +300,9 @@ For SSH, install AutoClip with the MCP extra on the server and configure:
 
 Source, clip and output times are distinct: source timestamps are absolute,
 clip time is relative to the uncut clip, and output time joins retained windows.
-Trim, words, slices and removed ranges use source time. Export revision matching
-is unknown; visual inspection is unavailable. Job processing or retry can incur
-provider costs and requires explicit consent through the tool argument.
+Trim, words, slices and removed ranges use source time. Inspection supports frames,
+contact sheets, revision checks and advisory CPU screen analysis. Limit review to two
+rounds; use fit when framing is uncertain, noting its blurred background. Export
+responses report unknown compatibility; revision inspection compares snapshots, and
+legacy exports remain unknown. Job processing or retry can incur provider costs and
+requires explicit consent through the tool argument.

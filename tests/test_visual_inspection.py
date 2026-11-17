@@ -21,10 +21,7 @@ from fastapi.testclient import TestClient
 @pytest.fixture
 def inspection_app(autoclip_home, monkeypatch):
     monkeypatch.setenv("AUTOCLIP_NO_WORKER", "1")
-    from autoclip.api import visual_inspection as vi_router
-
     app = create_app()
-    app.include_router(vi_router.router)
     with TestClient(app) as client:
         yield client
 
@@ -675,3 +672,23 @@ def test_real_ffmpeg_split_mode_parity(inspection_app, sample_clip, tmp_path):
     assert comp_img.shape == exp_img.shape
     mean_abs_diff = float(np.abs(exp_img.astype(np.float32) - comp_img.astype(np.float32)).mean())
     assert mean_abs_diff < 12.0
+
+
+def test_export_endpoint_records_snapshot_and_edit_makes_it_stale(
+    inspection_app, sample_clip, monkeypatch
+):
+    _, _, clip, _ = sample_clip
+
+    def fake_render(request, **kwargs):
+        request.destination.parent.mkdir(parents=True, exist_ok=True)
+        request.destination.write_bytes(b"isolated export")
+
+    monkeypatch.setattr(export_module, "export_clip", fake_render)
+    exported = inspection_app.post(f"/api/clips/{clip.id}/export", json={})
+    assert exported.status_code == 201, exported.text
+    revision = inspection_app.get(f"/api/clips/{clip.id}/inspection/revision")
+    assert revision.status_code == 200
+    assert revision.json()["export_freshness"]["status"] == "fresh"
+    store.patch_clip_edit(clip.id, {"burn_captions": False})
+    revision = inspection_app.get(f"/api/clips/{clip.id}/inspection/revision")
+    assert revision.json()["export_freshness"]["status"] == "stale"
