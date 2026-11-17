@@ -1,5 +1,6 @@
 """Local MCP adapter for the AutoClip API."""
 
+import math
 from urllib.parse import urlsplit
 
 
@@ -35,19 +36,11 @@ class AutoClipClient:
         )
 
     def get_clip(self, clip_id):
-        import re
-
-        if not re.fullmatch(r"[A-Za-z0-9_-]+", clip_id):
-            raise ValueError("Invalid clip ID")
-        response = self.client.get(f"/api/clips/{clip_id}")
-        response.raise_for_status()
-        return response.json()
+        result = self.request("GET", f"/api/clips/{self.identifier(clip_id)}")
+        return self.mark_exports_unknown(result)
 
     def create_job(self, source_id, settings, *, allow_paid=False):
-        import re
-
-        if not re.fullmatch(r"[A-Za-z0-9_-]+", source_id):
-            raise ValueError("Invalid source ID")
+        source_id = self.identifier(source_id)
         if not allow_paid:
             raise ValueError("Job processing may incur cost; explicit consent is required")
         allowed = {
@@ -62,16 +55,25 @@ class AutoClipClient:
         }
         if not isinstance(settings, dict) or not set(settings) <= allowed:
             raise ValueError("Unsupported job setting")
-        response = self.client.post(
-            "/api/jobs", json={"source_id": source_id, "settings": settings}
+        return self.request(
+            "POST", "/api/jobs", body={"source_id": source_id, "settings": settings}
         )
-        response.raise_for_status()
-        return response.json()
 
     def request(self, method, path, *, body=None, timeout=30.0):
         response = self.client.request(method, path, json=body, timeout=timeout)
-        response.raise_for_status()
+        if response.is_error:
+            try:
+                detail = response.json().get("detail", response.text)
+            except (ValueError, AttributeError):
+                detail = response.text
+            raise ValueError(f"AutoClip API {response.status_code}: {detail}")
         return response.json()
+
+    @staticmethod
+    def mark_exports_unknown(clip):
+        for item in clip.get("exports", []):
+            item["matches_current_edit"] = "unknown"
+        return clip
 
     @staticmethod
     def identifier(value):
@@ -103,16 +105,28 @@ class AutoClipClient:
 
     def list_clips(self, job_id):
         clips = self.request("GET", f"/api/jobs/{self.identifier(job_id)}/clips")
-        if isinstance(clips, list):
-            for clip in clips:
-                for item in clip.get("exports", []):
-                    item["matches_current_edit"] = "unknown"
-        return clips
+        return [self.mark_exports_unknown(clip) for clip in clips]
+
+    def crop_path(self, clip_id):
+        return self.request("GET", f"/api/clips/{self.identifier(clip_id)}/crop-path")
+
+    def caption_styles(self):
+        return self.request("GET", "/api/caption-styles")
+
+    def update_clip(self, clip_id, changes):
+        if not isinstance(changes, dict) or not set(changes) <= {"title", "status"}:
+            raise ValueError("Unsupported clip field")
+        return self.request("PATCH", f"/api/clips/{self.identifier(clip_id)}", body=changes)
 
     def get_words(self, clip_id):
         return self.request("GET", f"/api/clips/{self.identifier(clip_id)}/words")
 
     def trim_clip(self, clip_id, start_s, end_s):
+        if any(
+            isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x)
+            for x in (start_s, end_s)
+        ):
+            raise ValueError("Trim boundaries must be finite numbers")
         return self.request(
             "PATCH",
             f"/api/clips/{self.identifier(clip_id)}",
@@ -148,83 +162,109 @@ class AutoClipClient:
 
 def main():
     import os
+    from functools import partial
 
+    import anyio
     from mcp.server.fastmcp import FastMCP
 
     client = AutoClipClient(os.environ.get("AUTOCLIP_API_URL", "http://127.0.0.1:9879"))
     server = FastMCP("AutoClip")
 
     @server.tool()
-    def sources() -> list:
+    async def sources() -> list:
         """List existing sources."""
-        return client.list_sources()
+        return await anyio.to_thread.run_sync(
+            partial(
+                client.list_sources,
+            )
+        )
 
     @server.tool()
-    def ingest_youtube(url: str) -> dict:
+    async def ingest_youtube(url: str) -> dict:
         """Download a YouTube source into the configured library."""
-        return client.ingest_youtube(url)
+        return await anyio.to_thread.run_sync(partial(client.ingest_youtube, url))
 
     @server.tool()
-    def source(source_id: str) -> dict:
+    async def source(source_id: str) -> dict:
         """Get an existing source by ID."""
-        return client.get_source(source_id)
+        return await anyio.to_thread.run_sync(partial(client.get_source, source_id))
 
     @server.tool()
-    def jobs() -> list:
+    async def jobs() -> list:
         """List jobs and their statuses."""
-        return client.list_jobs()
+        return await anyio.to_thread.run_sync(
+            partial(
+                client.list_jobs,
+            )
+        )
 
     @server.tool()
-    def job(job_id: str) -> dict:
+    async def job(job_id: str) -> dict:
         """Get job status by ID."""
-        return client.get_job(job_id)
+        return await anyio.to_thread.run_sync(partial(client.get_job, job_id))
 
     @server.tool()
-    def create_job(source_id: str, settings: dict, allow_paid: bool = False) -> dict:
+    async def create_job(source_id: str, settings: dict, allow_paid: bool = False) -> dict:
         """Create a job. Processing may incur costs; explicitly set allow_paid."""
-        return client.create_job(source_id, settings, allow_paid=allow_paid)
+        return await anyio.to_thread.run_sync(
+            partial(client.create_job, source_id, settings, allow_paid=allow_paid)
+        )
 
     @server.tool()
-    def retry_job(job_id: str, allow_paid: bool = False) -> dict:
+    async def retry_job(job_id: str, allow_paid: bool = False) -> dict:
         """Retry a failed job. Processing may incur costs; explicitly set allow_paid."""
-        return client.retry_job(job_id, allow_paid=allow_paid)
+        return await anyio.to_thread.run_sync(
+            partial(client.retry_job, job_id, allow_paid=allow_paid)
+        )
 
     @server.tool()
-    def clips(job_id: str) -> list:
+    async def clips(job_id: str) -> list:
         """List clips for a job."""
-        return client.list_clips(job_id)
+        return await anyio.to_thread.run_sync(partial(client.list_clips, job_id))
 
     @server.tool()
-    def clip(clip_id: str) -> dict:
+    async def clip(clip_id: str) -> dict:
         """Get a clip; export compatibility is unknown without a fingerprint."""
-        result = client.get_clip(clip_id)
-        for item in result.get("exports", []):
-            item["matches_current_edit"] = "unknown"
-        return result
+        return await anyio.to_thread.run_sync(partial(client.get_clip, clip_id))
 
     @server.tool()
-    def transcript(clip_id: str) -> list:
+    async def crop_path(clip_id: str) -> dict:
+        """Read calculated crop path; timestamps use source seconds."""
+        return await anyio.to_thread.run_sync(partial(client.crop_path, clip_id))
+
+    @server.tool()
+    async def caption_styles() -> list:
+        """List available caption styles."""
+        return await anyio.to_thread.run_sync(client.caption_styles)
+
+    @server.tool()
+    async def update_clip(clip_id: str, changes: dict) -> dict:
+        """Update clip title or status."""
+        return await anyio.to_thread.run_sync(partial(client.update_clip, clip_id, changes))
+
+    @server.tool()
+    async def transcript(clip_id: str) -> list:
         """Get clip words; timestamps are absolute source seconds."""
-        return client.get_words(clip_id)
+        return await anyio.to_thread.run_sync(partial(client.get_words, clip_id))
 
     @server.tool()
-    def trim(clip_id: str, start_s: float, end_s: float) -> dict:
+    async def trim(clip_id: str, start_s: float, end_s: float) -> dict:
         """Set clip boundaries in absolute source seconds."""
-        return client.trim_clip(clip_id, start_s, end_s)
+        return await anyio.to_thread.run_sync(partial(client.trim_clip, clip_id, start_s, end_s))
 
     @server.tool()
-    def edit(clip_id: str, changes: dict) -> dict:
+    async def edit(clip_id: str, changes: dict) -> dict:
         """Edit framing, captions or removed_ranges; slices, words and cuts use source seconds.
 
         Framing modes: auto, fit (blur), manual, split and slices. Use fit when unsure.
         Output time joins retained windows; clip time starts at clip start before cuts.
         """
-        return client.edit_clip(clip_id, changes)
+        return await anyio.to_thread.run_sync(partial(client.edit_clip, clip_id, changes))
 
     @server.tool()
-    def export(clip_id: str, options: dict) -> dict:
+    async def export(clip_id: str, options: dict) -> dict:
         """Render the current edit. Export revision compatibility is unknown."""
-        return client.export_clip(clip_id, options)
+        return await anyio.to_thread.run_sync(partial(client.export_clip, clip_id, options))
 
     @server.tool()
     def inspection_availability() -> dict:

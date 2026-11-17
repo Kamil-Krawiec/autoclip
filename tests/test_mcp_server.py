@@ -62,12 +62,14 @@ def test_supported_operations_and_errors():
         calls.append((request.method, request.url.path))
         if request.url.path.endswith("missing"):
             return httpx.Response(404, json={"detail": "Not found"})
-        return httpx.Response(200, json={"id": "ok"})
+        if request.url.path.endswith("/clips"):
+            return httpx.Response(200, json=[{"exports": [{}]}])
+        return httpx.Response(200, json={"id": "ok", "exports": [{}]})
 
     client = AutoClipClient("http://127.0.0.1:9879", transport=httpx.MockTransport(handle))
     client.get_source("src")
     client.get_job("job")
-    client.list_clips("job")
+    assert client.list_clips("job")[0]["exports"][0]["matches_current_edit"] == "unknown"
     client.get_words("clip")
     client.trim_clip("clip", 1, 4)
     client.edit_clip("clip", {"removed_ranges": [{"start_s": 2, "end_s": 3}]})
@@ -85,7 +87,7 @@ def test_supported_operations_and_errors():
         client.edit_clip("clip", {"provider": "other"})
     with pytest.raises(ValueError):
         client.retry_job("job")
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(ValueError, match="404.*Not found"):
         client.get_source("missing")
 
 
@@ -101,6 +103,12 @@ def test_stdio_sdk_calls_real_tool_against_isolated_http():
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
+            if self.path == "/api/clips/missing":
+                self.send_response(422)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"detail":"invalid clip"}')
+                return
             assert self.path == "/api/sources"
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -128,6 +136,9 @@ def test_stdio_sdk_calls_real_tool_against_isolated_http():
                 result = await session.call_tool("sources", {})
                 assert not result.isError
                 assert "isolated" in str(result.content)
+                error = await session.call_tool("clip", {"clip_id": "missing"})
+                assert error.isError
+                assert "invalid clip" in str(error.content)
 
     try:
         asyncio.run(run())
@@ -135,3 +146,33 @@ def test_stdio_sdk_calls_real_tool_against_isolated_http():
         server.shutdown()
         server.server_close()
         thread.join()
+
+
+def test_validation_and_export_status():
+    import httpx
+    from autoclip.mcp_server import AutoClipClient
+
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(200, json={"exports": [{}]})
+
+    client = AutoClipClient("http://localhost:9879", transport=httpx.MockTransport(handle))
+    assert client.get_clip("c")["exports"][0]["matches_current_edit"] == "unknown"
+    for bad in (float("nan"), float("inf"), True):
+        with pytest.raises(ValueError, match="finite"):
+            client.trim_clip("c", bad, 3)
+    with pytest.raises(ValueError, match="Unsupported"):
+        client.create_job("s", {"provider": "x"}, allow_paid=True)
+    client.retry_job("j", allow_paid=True)
+    client.crop_path("c")
+    client.caption_styles()
+    client.update_clip("c", {"status": "kept"})
+    assert [r.url.path for r in calls] == [
+        "/api/clips/c",
+        "/api/jobs/j/retry",
+        "/api/clips/c/crop-path",
+        "/api/caption-styles",
+        "/api/clips/c",
+    ]
