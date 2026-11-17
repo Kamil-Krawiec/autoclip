@@ -206,14 +206,18 @@ def test_revision_tracks_all_visual_edits_and_export_freshness(sample_clip):
     # Recorded snapshot revision -> deterministic fresh, then stale after edit
     recorded = Export(id="exp_det", clip_id=clip.id, path="/tmp/det.mp4", ratio="1:1")
     record_export_revision(recorded.id, clip_id=clip.id, revision=rev_cut, ratio="1:1")
-    fresh_ok = assess_export_freshness(clip.id, rev_cut, [legacy, recorded])
+    store.create_export(legacy)
+    store.create_export(recorded)
+    exports = store.list_exports(clip.id)
+    assert [e.id for e in exports][:2] == [recorded.id, legacy.id]
+    fresh_ok = assess_export_freshness(clip.id, rev_cut, exports)
     assert fresh_ok["status"] == "fresh"
     assert fresh_ok["is_fresh"] is True
     assert fresh_ok["deterministic"] is True
 
     store.patch_clip_edit(clip.id, {"burn_captions": False})
     rev_noburn, _ = compute_clip_revision(clip.id)
-    stale = assess_export_freshness(clip.id, rev_noburn, [legacy, recorded])
+    stale = assess_export_freshness(clip.id, rev_noburn, [recorded, legacy])
     assert stale["status"] == "stale"
     assert stale["is_fresh"] is False
     assert stale["deterministic"] is True

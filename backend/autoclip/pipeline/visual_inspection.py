@@ -539,7 +539,7 @@ def assess_export_freshness(
             "latest_export": None,
         }
 
-    latest = exports[-1]
+    latest = exports[0]
     sidecar = read_export_revision(latest.id)
     recorded_revision = sidecar["revision"] if sidecar else None
     latest_info = {

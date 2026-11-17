@@ -271,3 +271,78 @@ def test_stdio_long_export_does_not_block_ping_or_jobs():
         server.shutdown()
         server.server_close()
         thread.join()
+
+
+def test_stdio_inspection_images_and_revision_options():
+    import asyncio
+    import json
+    import os
+    import sys
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+    from mcp.types import ImageContent, TextContent
+
+    paths = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            paths.append(self.path)
+            self.reply({"status": "fresh"})
+
+        def do_POST(self):
+            paths.append(self.path)
+            size = int(self.headers.get("Content-Length", "0"))
+            self.rfile.read(size)
+            image = {"mime_type": "image/png", "data_base64": "aGVsbG8="}
+            self.reply(
+                {"frames": [{"source_image": image}]}
+                if self.path.endswith("frames")
+                else {"image": image}
+            )
+
+        def reply(self, data):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(data).encode())
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    async def run():
+        params = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "autoclip.mcp_server"],
+            env={**os.environ, "AUTOCLIP_API_URL": f"http://127.0.0.1:{server.server_port}"},
+        )
+        async with stdio_client(params) as (read, write):  # noqa: SIM117
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                for name in ("inspection_frames", "inspection_contact_sheet"):
+                    result = await session.call_tool(name, {"clip_id": "c", "options": {}})
+                    assert not result.isError, result
+                    assert isinstance(result.content[0], TextContent)
+                    assert isinstance(result.content[1], ImageContent)
+                    assert result.content[1].data == "aGVsbG8="
+                    assert "data_base64" not in result.content[0].text
+                result = await session.call_tool(
+                    "inspection_revision", {"clip_id": "c", "ratio": "1:1", "style": "bold_pop"}
+                )
+                assert not result.isError
+                result = await session.call_tool("inspection_analyze_screen", {"clip_id": "c"})
+                assert not result.isError
+
+    try:
+        asyncio.run(run())
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+    assert "ratio=1%3A1" in paths[2] and "style=bold_pop" in paths[2]

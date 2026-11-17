@@ -436,6 +436,7 @@ def get_export(export_id: str) -> Export | None:
 def list_exports(clip_id: str) -> list[Export]:
     with connection() as conn:
         rows = conn.execute(
-            "SELECT * FROM exports WHERE clip_id = ? ORDER BY created_at DESC", (clip_id,)
+            "SELECT * FROM exports WHERE clip_id = ? ORDER BY created_at DESC, rowid DESC",
+            (clip_id,),
         ).fetchall()
     return [Export.from_row(r) for r in rows]

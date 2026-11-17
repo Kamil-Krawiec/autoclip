@@ -251,3 +251,20 @@ def test_benchmark_60s_1080p_cpu_screen_analysis(tmp_path):
     assert res.sampled_frames >= 150
     assert elapsed_s < 20.0  # Safety sanity cap; actual measured ms reported in test output
     print(f"BENCHMARK_60S_1080P_ELAPSED_S={elapsed_s:.3f} sampled_frames={res.sampled_frames}")
+
+
+def test_segment_boundaries_do_not_exceed_precise_source_end():
+    from autoclip.pipeline.screen_analysis import _build_segment_hint
+
+    hint = _build_segment_hint(
+        seg_clip_start=0.0,
+        seg_clip_end=5.99996,
+        clip_start_abs=0.0,
+        clip_end_abs=5.99996,
+        pairs=[],
+        src_w=640,
+        src_h=360,
+        ratio="9:16",
+        crop_path=None,
+    )
+    assert hint.source_end_s <= 5.99996

@@ -59,8 +59,8 @@ class AutoClipClient:
             "POST", "/api/jobs", body={"source_id": source_id, "settings": settings}
         )
 
-    def request(self, method, path, *, body=None, timeout=30.0):
-        response = self.client.request(method, path, json=body, timeout=timeout)
+    def request(self, method, path, *, body=None, params=None, timeout=30.0):
+        response = self.client.request(method, path, json=body, params=params, timeout=timeout)
         if response.is_error:
             try:
                 detail = response.json().get("detail", response.text)
@@ -165,7 +165,8 @@ class AutoClipClient:
         return self.request(
             endpoints[operation],
             f"/api/clips/{self.identifier(clip_id)}/inspection/{operation}",
-            body=options,
+            body=options if operation != "revision" else None,
+            params=options if operation == "revision" else None,
             timeout=1800.0,
         )
 
@@ -286,27 +287,65 @@ def main():
         return await anyio.to_thread.run_sync(partial(client.export_clip, clip_id, options))
 
     @server.tool()
-    async def inspection_revision(clip_id: str) -> dict:
+    async def inspection_revision(
+        clip_id: str, ratio: str | None = None, style: str | None = None
+    ) -> dict:
         """Get current revision and export freshness; legacy exports remain unknown."""
-        return await anyio.to_thread.run_sync(partial(client.inspect, clip_id, "revision"))
-
-    @server.tool()
-    async def inspection_frames(clip_id: str, options: dict) -> dict:
-        """Inspect frames; timeline is source, clip, or retained output seconds."""
-        return await anyio.to_thread.run_sync(partial(client.inspect, clip_id, "frames", options))
-
-    @server.tool()
-    async def inspection_contact_sheet(clip_id: str, options: dict) -> dict:
-        """Inspect a contact sheet; timeline is source, clip, or retained output seconds."""
         return await anyio.to_thread.run_sync(
-            partial(client.inspect, clip_id, "contact-sheet", options)
+            partial(
+                client.inspect,
+                clip_id,
+                "revision",
+                {k: v for k, v in {"ratio": ratio, "style": style}.items() if v is not None},
+            )
+        )
+
+    def image_content(result):
+        import json
+
+        from mcp.types import ImageContent, TextContent
+
+        images = []
+
+        def extract(value):
+            if isinstance(value, dict):
+                if "data_base64" in value and "mime_type" in value:
+                    images.append(
+                        ImageContent(
+                            type="image", data=value.pop("data_base64"), mimeType=value["mime_type"]
+                        )
+                    )
+                    value["content_index"] = len(images)
+                for item in value.values():
+                    extract(item)
+            elif isinstance(value, list):
+                for item in value:
+                    extract(item)
+
+        extract(result)
+        return [TextContent(type="text", text=json.dumps(result)), *images]
+
+    @server.tool()
+    async def inspection_frames(clip_id: str, options: dict) -> list:
+        """Inspect frames; timeline is source, clip, or retained output seconds."""
+        return image_content(
+            await anyio.to_thread.run_sync(partial(client.inspect, clip_id, "frames", options))
         )
 
     @server.tool()
-    async def inspection_analyze_screen(clip_id: str, options: dict) -> dict:
+    async def inspection_contact_sheet(clip_id: str, options: dict) -> list:
+        """Inspect a contact sheet; timeline is source, clip, or retained output seconds."""
+        return image_content(
+            await anyio.to_thread.run_sync(
+                partial(client.inspect, clip_id, "contact-sheet", options)
+            )
+        )
+
+    @server.tool()
+    async def inspection_analyze_screen(clip_id: str, options: dict | None = None) -> dict:
         """Get advisory CPU screen and framing analysis; fit blur is uncertain."""
         return await anyio.to_thread.run_sync(
-            partial(client.inspect, clip_id, "analyze-screen", options)
+            partial(client.inspect, clip_id, "analyze-screen", options or {})
         )
 
     server.run(transport="stdio")

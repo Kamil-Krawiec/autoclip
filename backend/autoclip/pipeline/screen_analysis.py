@@ -203,14 +203,15 @@ def _build_segment_hint(
     seg_clip_start: float,
     seg_clip_end: float,
     clip_start_abs: float,
+    clip_end_abs: float,
     pairs: list[_PairSample],
     src_w: int,
     src_h: int,
     ratio: str,
     crop_path: CropPath | None,
 ) -> ScreenSegmentHint:
-    src_start = round(clip_start_abs + seg_clip_start, 4)
-    src_end = round(clip_start_abs + seg_clip_end, 4)
+    src_start = clip_start_abs + seg_clip_start
+    src_end = min(clip_end_abs, clip_start_abs + seg_clip_end)
     mid_t = (seg_clip_start + seg_clip_end) / 2.0
     strategy, speaker_box = _crop_box_norm_at(crop_path, mid_t)
 
@@ -572,6 +573,7 @@ def analyze_clip_screens(
             seg_clip_start=seg_start,
             seg_clip_end=seg_end,
             clip_start_abs=start_s,
+            clip_end_abs=end_s,
             pairs=seg_pairs,
             src_w=src_w,
             src_h=src_h,
