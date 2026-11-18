@@ -118,6 +118,7 @@ select = ["E", "F", "I", "UP", "B", "SIM", "C4"]
 ignore = ["B008"]  # typer/fastapi use function calls in argument defaults by design
 
 [tool.pytest.ini_options]
+pythonpath = ["."]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 filterwarnings = ["ignore::DeprecationWarning"]

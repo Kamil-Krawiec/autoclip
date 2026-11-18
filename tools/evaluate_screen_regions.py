@@ -27,12 +27,16 @@ def _box(value):
 
 
 def evaluate(data):
+    if not isinstance(data, dict):
+        raise ValueError("Input must be an object containing examples")
     examples = data.get("examples")
     if not isinstance(examples, list) or not examples:
         raise ValueError("At least one independently annotated example is required")
     groups = defaultdict(list)
     seen = set()
     for example in examples:
+        if not isinstance(example, dict):
+            raise ValueError("Each example must be an object")
         key = example.get("id")
         category = example.get("category")
         if (
