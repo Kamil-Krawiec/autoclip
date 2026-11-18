@@ -735,6 +735,7 @@ def test_frame_framing_override_is_transient(inspection_app, sample_clip, monkey
     )
 
 
+@pytest.mark.parametrize("ratio", ["9:16", "1:1", "16:9"])
 @pytest.mark.parametrize(
     "saved_framing",
     [
@@ -746,7 +747,7 @@ def test_frame_framing_override_is_transient(inspection_app, sample_clip, monkey
     ],
 )
 def test_frame_override_replaces_saved_framing_without_mutation(
-    inspection_app, sample_clip, monkeypatch, saved_framing
+    inspection_app, sample_clip, monkeypatch, saved_framing, ratio
 ):
     from autoclip.pipeline import visual_inspection as vi
 
@@ -769,13 +770,17 @@ def test_frame_override_replaces_saved_framing_without_mutation(
         if mode == "manual":
             framing.update(center_x=0.5, center_y=0.5, zoom=2.0)
         response = inspection_app.post(
-            url, json={"timestamps": [1], "target": "both", "ratio": "16:9", "framing": framing}
+            url, json={"timestamps": [1], "target": "both", "ratio": ratio, "framing": framing}
         )
         assert response.status_code == 200, response.text
         frame = response.json()["frames"][0]
         assert frame["framing_mode"] == mode
+        assert frame["face_caption_collision"]["status"] == "unknown"
+        assert frame["source_region"]["status"] == ("unknown" if mode == "split" else "known")
+        if mode == "fit":
+            assert frame["source_region"]["clipped_fraction"] == 0
         assert frame["source_image"] and frame["composed_image"]
-        assert seen[-1]["ratio"] == "16:9"
+        assert seen[-1]["ratio"] == ratio
         assert store.get_clip_edit(clip.id) == before
     assert inspection_app.get(f"/api/clips/{clip.id}/inspection/revision").json() == revision
     assert (
@@ -796,3 +801,20 @@ def test_frame_override_replaces_saved_framing_without_mutation(
         ).status_code
         == 422
     )
+
+
+def test_source_region_diagnostics_geometry_and_boundaries():
+    from autoclip.pipeline.reframe.croppath import CropKeyframe, CropPath, CropSegment
+    from autoclip.pipeline.visual_inspection import source_region_diagnostics
+
+    crop = CropSegment(0, 1, 50, 100, [CropKeyframe(0, 0, 0), CropKeyframe(1, 50, 0)])
+    fit = CropSegment(1, 2, 100, 100, fit=True)
+    path = CropPath(100, 100, [crop, fit])
+    result = source_region_diagnostics(path, 0.5)
+    assert result["visible_source_rect"] == {"x": 25, "y": 0, "width": 50, "height": 100}
+    assert result["clipped_fraction"] == 0.5
+    assert source_region_diagnostics(path, 1)["clipped_fraction"] == 0
+    assert source_region_diagnostics(CropPath(0, 100, [crop]), 0)["status"] == "unknown"
+    assert source_region_diagnostics(CropPath(100, 100, []), 0)["status"] == "unknown"
+    crop.keyframes = []
+    assert source_region_diagnostics(path, 0)["status"] == "unknown"

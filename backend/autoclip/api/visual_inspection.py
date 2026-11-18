@@ -298,6 +298,13 @@ def _extract_frames_sync(clip_id: str, payload: FramesRequestIn) -> dict[str, An
                 "window_index": mapped.window_index,
                 "framing_mode": framing_mode,
                 "segment_strategy": segment_strategy,
+                "source_region": vi.source_region_diagnostics(crop_path, clamped_clip_t)
+                if in_clip and payload.target in ("composed", "both")
+                else {"status": "unknown", "reason": "No composed frame geometry available."},
+                "face_caption_collision": {
+                    "status": "unknown",
+                    "reason": "Face and caption geometry evidence is unavailable.",
+                },
                 "source_image": src_payload,
                 "composed_image": comp_payload,
                 "export_image": exp_payload,

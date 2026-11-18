@@ -325,7 +325,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   compareFrame: (clipId: string, timestamp: number, framing: SingleFraming) =>
-    request<{ current_revision: string; frames: { composed_image: { mime_type: string; data_base64: string } }[] }>(
+    request<{ current_revision: string; frames: { composed_image: { mime_type: string; data_base64: string }; source_region: { status: string; clipped_fraction?: number; reason?: string }; face_caption_collision: { status: string; reason?: string } }[] }>(
       `/api/clips/${clipId}/inspection/frames`,
       { method: 'POST', body: JSON.stringify({ timestamps: [timestamp], timeline: 'source', target: 'composed', framing }) },
     ),

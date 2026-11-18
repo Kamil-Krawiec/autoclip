@@ -8,7 +8,7 @@ export function FramingComparison({ clip, playheadSourceS, signature, disabled }
   signature: string
   disabled: boolean
 }) {
-  const [images, setImages] = useState<{ label: string; url: string }[]>([])
+  const [images, setImages] = useState<{ label: string; url: string; region: string; collision: string }[]>([])
   const [time, setTime] = useState(0)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<Error | null>(null)
@@ -46,7 +46,12 @@ export function FramingComparison({ clip, playheadSourceS, signature, disabled }
         revision = result.current_revision
         const image = result.frames[0]?.composed_image
         if (!image) throw new Error(`No frame returned for ${label}.`)
-        results.push({ label, url: `data:${image.mime_type};base64,${image.data_base64}` })
+        const frame = result.frames[0]
+        const region = frame.source_region.status === 'known' && frame.source_region.clipped_fraction !== undefined
+          ? `${(frame.source_region.clipped_fraction * 100).toFixed(1)}% estimated source area outside foreground crop`
+          : `Source clipping unknown: ${frame.source_region.reason ?? 'geometry unavailable'}`
+        results.push({ label, url: `data:${image.mime_type};base64,${image.data_base64}`, region,
+          collision: `Face/caption collision unknown: ${frame.face_caption_collision.reason ?? 'evidence unavailable'}` })
       }
       setTime(timestamp)
       setImages(results)
@@ -72,9 +77,9 @@ export function FramingComparison({ clip, playheadSourceS, signature, disabled }
       {images.length > 0 && <>
         <p className="text-xs text-ink-400">Source time {formatTimecode(time)}</p>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          {images.map(({ label, url }) => <figure key={label}>
+          {images.map(({ label, url, region, collision }) => <figure key={label}>
             <img src={url} alt={`${label} framing at ${formatTimecode(time)}`} className="w-full" />
-            <figcaption className="mt-1 text-sm text-ink-200">{label}</figcaption>
+            <figcaption className="mt-1 text-sm text-ink-200">{label}<p className="text-xs text-ink-400">{region}</p><p className="text-xs text-ink-400">{collision}</p></figcaption>
           </figure>)}
         </div>
       </>}

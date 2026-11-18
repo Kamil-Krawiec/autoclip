@@ -733,6 +733,36 @@ def active_framing_label(
     return "auto"
 
 
+def source_region_diagnostics(crop_path: CropPath, clip_t: float) -> dict[str, Any]:
+    """Describe source coverage for the same segment used by the frame renderer."""
+    unknown = {"status": "unknown", "reason": "Source dimensions or crop geometry unavailable."}
+    width, height = crop_path.source_width, crop_path.source_height
+    if width <= 0 or height <= 0 or not crop_path.segments:
+        return unknown
+    segment, _ = segment_at_clip_time(crop_path, clip_t)
+    if segment.split:
+        return {"status": "unknown", "reason": "Split panel coverage is not calculated."}
+    if segment.fit:
+        x, y, crop_w, crop_h = 0.0, 0.0, width, height
+    else:
+        if not segment.keyframes or not (
+            0 < segment.width <= width and 0 < segment.height <= height
+        ):
+            return unknown
+        kf = interpolate_keyframe(segment.keyframes, clip_t)
+        if not math.isfinite(kf.x) or not math.isfinite(kf.y):
+            return unknown
+        x = round(max(0.0, min(float(width - segment.width), kf.x)), 2)
+        y = round(max(0.0, min(float(height - segment.height), kf.y)), 2)
+        crop_w, crop_h = segment.width, segment.height
+    return {
+        "status": "known",
+        "visible_source_rect": {"x": x, "y": y, "width": crop_w, "height": crop_h},
+        "source_size": {"width": width, "height": height},
+        "clipped_fraction": 1.0 - (crop_w * crop_h) / (width * height),
+    }
+
+
 def extract_composed_frame(
     *,
     media_path: Path,
