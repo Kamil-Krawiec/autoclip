@@ -733,3 +733,66 @@ def test_frame_framing_override_is_transient(inspection_app, sample_clip, monkey
         ).status_code
         == 422
     )
+
+
+@pytest.mark.parametrize(
+    "saved_framing",
+    [
+        {"mode": "fit"},
+        {
+            "mode": "slices",
+            "segments": [{"start_s": 10.0, "end_s": 25.0, "framing": {"mode": "fit"}}],
+        },
+    ],
+)
+def test_frame_override_replaces_saved_framing_without_mutation(
+    inspection_app, sample_clip, monkeypatch, saved_framing
+):
+    from autoclip.pipeline import visual_inspection as vi
+
+    _, _, clip, _ = sample_clip
+    store.patch_clip_edit(clip.id, {"framing": saved_framing, "ratio": "1:1"})
+    before = store.get_clip_edit(clip.id)
+    revision = inspection_app.get(f"/api/clips/{clip.id}/inspection/revision").json()
+    seen = []
+    image = vi.EncodedImage("image/jpeg", 1, 1, b"frame")
+    monkeypatch.setattr(vi, "extract_source_frame", lambda *args, **kwargs: image)
+
+    def render(**kwargs):
+        seen.append(kwargs)
+        return image
+
+    monkeypatch.setattr(vi, "extract_composed_frame", render)
+    url = f"/api/clips/{clip.id}/inspection/frames"
+    for mode in ("auto", "fit", "manual", "split"):
+        framing = {"mode": mode}
+        if mode == "manual":
+            framing.update(center_x=0.5, center_y=0.5, zoom=2.0)
+        response = inspection_app.post(
+            url, json={"timestamps": [1], "target": "both", "ratio": "16:9", "framing": framing}
+        )
+        assert response.status_code == 200, response.text
+        frame = response.json()["frames"][0]
+        assert frame["framing_mode"] == mode
+        assert frame["source_image"] and frame["composed_image"]
+        assert seen[-1]["ratio"] == "16:9"
+        assert store.get_clip_edit(clip.id) == before
+    assert inspection_app.get(f"/api/clips/{clip.id}/inspection/revision").json() == revision
+    assert (
+        inspection_app.post(
+            url, json={"timestamps": [1], "framing": {"mode": "slices", "segments": []}}
+        ).status_code
+        == 422
+    )
+    assert (
+        inspection_app.post(
+            url,
+            json={
+                "timestamps": [1],
+                "target": "export",
+                "export_id": "x",
+                "framing": {"mode": "fit"},
+            },
+        ).status_code
+        == 422
+    )
