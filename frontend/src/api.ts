@@ -324,6 +324,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  compareFrame: (clipId: string, timestamp: number, framing: SingleFraming) =>
+    request<{ current_revision: string; frames: { composed_image: { mime_type: string; data_base64: string }; source_region: { status: string; clipped_fraction?: number; reason?: string; visible_source_rects?: { x: number; y: number; width: number; height: number }[] }; face_caption_collision: { status: string; reason?: string } }[] }>(
+      `/api/clips/${clipId}/inspection/frames`,
+      { method: 'POST', body: JSON.stringify({ timestamps: [timestamp], timeline: 'source', target: 'composed', framing }) },
+    ),
   health: () => request<{ status: string; version: string }>('/api/health'),
   system: () => request<SystemStatus>('/api/system'),
   fetchModels: () => request<void>('/api/system/models', { method: 'POST' }),

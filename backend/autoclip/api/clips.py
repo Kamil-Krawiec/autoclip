@@ -25,6 +25,7 @@ from ..pipeline.framing import resolve_crop_path, validate_framing_bounds
 from ..pipeline.reframe.croppath import CropPath
 from ..pipeline.runner import JobWorkspace
 from ..pipeline.transcript import Transcript, Word
+from ..pipeline.visual_inspection import compute_render_revision, record_export_revision
 from .schemas import (
     CaptionPatchIn,
     CaptionStyleOut,
@@ -310,14 +311,27 @@ async def _prepare_saved_render(
         output_start_s=output_start_s,
         output_duration_s=output_duration_s,
     )
-    return clip, workspace, ratio, style, request
+    revision = compute_render_revision(
+        clip_id=clip.id,
+        start_s=clip.start_s,
+        end_s=clip.end_s,
+        ratio=ratio,
+        style=style,
+        caption_overrides=edit.caption_overrides,
+        burn_captions=edit.burn_captions,
+        crop_path=crop_path,
+        framing=edit.framing,
+        removed_ranges=edit.removed_ranges,
+        words=words,
+    )
+    return clip, workspace, ratio, style, request, revision
 
 
 @router.post("/clips/{clip_id}/export", response_model=ExportOut, status_code=201)
 async def export_clip(clip_id: str, payload: ExportRequestIn) -> ExportOut:
     """Render one clip and return its download link."""
     export_id = new_id()
-    clip, workspace, ratio, style, request = await _prepare_saved_render(
+    clip, workspace, ratio, style, request, revision = await _prepare_saved_render(
         clip_id,
         ratio_override=payload.ratio,
         style_override=payload.style,
@@ -353,6 +367,17 @@ async def export_clip(clip_id: str, payload: ExportRequestIn) -> ExportOut:
         size_bytes=destination.stat().st_size,
     )
     await asyncio.to_thread(store.create_export, record)
+    try:
+        await asyncio.to_thread(
+            record_export_revision,
+            export_id,
+            clip_id=clip_id,
+            revision=revision,
+            ratio=ratio,
+            style=style.key,
+        )
+    except OSError:
+        log.exception("Could not record export revision for %s", export_id)
     await asyncio.to_thread(store.update_clip, clip_id, status="exported")
 
     return ExportOut.of(record)
@@ -406,7 +431,7 @@ async def preview_clip(clip_id: str, payload: PreviewRequestIn | None = None) ->
         temp_dir = Path(tempfile.mkdtemp(prefix=f"preview-{clip_id}-", dir=base_tmp))
         destination = temp_dir / "preview.mp4"
 
-        _, _, _, _, request = await _prepare_saved_render(
+        _, _, _, _, request, _ = await _prepare_saved_render(
             clip_id,
             destination=destination,
             output_start_s=params.start_s,
