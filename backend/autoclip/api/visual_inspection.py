@@ -18,10 +18,10 @@ from pydantic import (
     model_validator,
 )
 
-from ..db import store
+from ..db import models, store
 from ..pipeline import screen_analysis as sa
 from ..pipeline import visual_inspection as vi
-from .schemas import LeafFramingIn
+from .schemas import AutoFitFramingIn, LeafFramingIn, ManualFramingIn
 
 router = APIRouter(prefix="/api", tags=["visual-inspection"])
 
@@ -161,10 +161,28 @@ def _extract_frames_sync(clip_id: str, payload: FramesRequestIn) -> dict[str, An
     exports = store.list_exports(clip_id)
     freshness = vi.assess_export_freshness(clip_id, revision, exports)
     if payload.framing is not None:
-        framing = payload.framing.model_dump()
-        preview_edit = replace(
-            edit, ratio=ratio, framing=None if framing["mode"] == "auto" else framing
-        )
+        requested = payload.framing
+        framing: models.LeafFraming | None
+        if isinstance(requested, AutoFitFramingIn):
+            framing = None if requested.mode == "auto" else {"mode": "fit"}
+        elif isinstance(requested, ManualFramingIn):
+            framing = {
+                "mode": "manual",
+                "center_x": requested.center_x,
+                "center_y": requested.center_y,
+                "zoom": requested.zoom,
+            }
+        else:
+            panels = requested.panels
+            framing = {
+                "mode": "split",
+                "panels": [
+                    {"x": p.x, "y": p.y, "width": p.width, "height": p.height} for p in panels
+                ]
+                if panels is not None
+                else None,
+            }
+        preview_edit = replace(edit, ratio=ratio, framing=framing)
         cached = vi.JobWorkspace(job.id).crop_path(clip.id)
         auto_path = vi.CropPath.load(cached) if cached.exists() else None
         crop_path = vi.resolve_crop_path(source, clip, job, preview_edit, auto_path)

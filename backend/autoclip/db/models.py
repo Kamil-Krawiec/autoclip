@@ -12,7 +12,7 @@ import sqlite3
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any, Literal, NotRequired, TypedDict
 
 SourceType = Literal["youtube", "upload"]
 JobStatus = Literal["queued", "running", "failed", "done", "cancelled"]
@@ -175,9 +175,48 @@ class Clip:
         )
 
 
-# Validated at the API boundary; stored JSON supports auto, fit, manual,
-# split and nested slices, each with a different shape.
-Framing = dict[str, Any]
+class AutoFraming(TypedDict):
+    mode: Literal["auto"]
+
+
+class FitFraming(TypedDict):
+    mode: Literal["fit"]
+
+
+class ManualFraming(TypedDict):
+    mode: Literal["manual"]
+    center_x: float
+    center_y: float
+    zoom: float
+
+
+class SplitPanel(TypedDict):
+    x: float
+    y: float
+    width: float
+    height: float
+
+
+class SplitFraming(TypedDict):
+    mode: Literal["split"]
+    panels: NotRequired[list[SplitPanel] | None]
+
+
+LeafFraming = AutoFraming | FitFraming | ManualFraming | SplitFraming
+
+
+class FramingSlice(TypedDict):
+    start_s: float
+    end_s: float
+    framing: LeafFraming
+
+
+class SlicesFraming(TypedDict):
+    mode: Literal["slices"]
+    segments: list[FramingSlice]
+
+
+Framing = LeafFraming | SlicesFraming
 
 
 @dataclass

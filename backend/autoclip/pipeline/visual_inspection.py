@@ -22,7 +22,7 @@ import numpy as np
 from .. import library as media_library
 from .. import paths
 from ..db import store
-from ..db.models import Clip, ClipEdit, Export, Job, Source, utcnow
+from ..db.models import Clip, ClipEdit, Export, Framing, Job, Source, utcnow
 from . import captions as captions_module
 from . import export as export_module
 from . import ffmpeg
@@ -344,7 +344,7 @@ def compute_render_revision(
     caption_overrides: dict[str, float] | None,
     burn_captions: bool,
     crop_path: CropPath,
-    framing: dict[str, Any] | None,
+    framing: Framing | None,
     removed_ranges: list[dict[str, float]],
     words: list[Word] | list[dict[str, Any]],
 ) -> str:
@@ -716,12 +716,12 @@ def active_framing_label(
         return "split"
     if edit.framing is None:
         return "auto"
-    mode = edit.framing.get("mode", "auto")
+    mode = edit.framing["mode"]
     if mode in ("fit", "split", "manual"):
         return str(mode)
-    if mode == "slices":
+    if edit.framing["mode"] == "slices":
         abs_t = clip_start_s + clip_t
-        segments = edit.framing.get("segments", [])
+        segments = edit.framing["segments"]
         for seg in segments:
             if (
                 float(seg["start_s"]) - _BOUNDARY_EPSILON_S

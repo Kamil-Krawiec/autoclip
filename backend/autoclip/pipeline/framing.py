@@ -4,7 +4,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..db.models import Clip, ClipEdit, Job, Source
+from ..db.models import (
+    Clip,
+    ClipEdit,
+    FramingSlice,
+    Job,
+    LeafFraming,
+    ManualFraming,
+    Source,
+    SplitFraming,
+)
 from .reframe.croppath import CropKeyframe, CropPath, CropSegment, centre_crop, target_crop_size
 
 MAX_FRAMING_SLICES = 64
@@ -121,8 +130,9 @@ def _fit_segment(width: int, height: int, start_s: float, end_s: float) -> CropS
 
 
 def _split_segment(
-    width: int, height: int, start_s: float, end_s: float, framing: dict[str, Any]
+    width: int, height: int, start_s: float, end_s: float, framing: SplitFraming
 ) -> CropSegment:
+    panels = framing.get("panels")
     return CropSegment(
         start_s,
         end_s,
@@ -130,7 +140,11 @@ def _split_segment(
         height,
         [CropKeyframe(start_s, 0, 0)],
         split=True,
-        split_panels=framing.get("panels"),
+        split_panels=[
+            {"x": p["x"], "y": p["y"], "width": p["width"], "height": p["height"]} for p in panels
+        ]
+        if panels
+        else None,
     )
 
 
@@ -138,7 +152,7 @@ def _manual_segment(
     width: int,
     height: int,
     ratio: str,
-    framing: dict[str, Any],
+    framing: ManualFraming,
     start_s: float,
     end_s: float,
 ) -> CropSegment:
@@ -209,14 +223,14 @@ def _resolve_slices(
     height: int,
     clip: Clip,
     ratio: str,
-    raw_segments: list[dict[str, Any]],
+    raw_segments: list[FramingSlice],
     auto_base: CropPath,
 ) -> CropPath:
     duration_s = clip.duration_s
     if duration_s <= 0 or not raw_segments:
         return CropPath(width, height, slice_crop_path(auto_base, 0.0, max(0.0, duration_s)))
 
-    visible: list[tuple[float, float, dict[str, Any]]] = []
+    visible: list[tuple[float, float, LeafFraming]] = []
     for seg in raw_segments:
         rel_start = max(0.0, min(duration_s, float(seg["start_s"]) - clip.start_s))
         rel_end = max(0.0, min(duration_s, float(seg["end_s"]) - clip.start_s))
@@ -226,7 +240,7 @@ def _resolve_slices(
     if not visible:
         return CropPath(width, height, slice_crop_path(auto_base, 0.0, duration_s))
 
-    spans: list[tuple[float, float, dict[str, Any]]] = []
+    spans: list[tuple[float, float, LeafFraming]] = []
     cursor = 0.0
     for start_s, end_s, leaf in visible:
         if start_s - cursor > _MIN_SEGMENT_SPAN_S:
@@ -246,12 +260,11 @@ def _resolve_slices(
 
     resolved: list[CropSegment] = []
     for s0, s1, leaf in spans:
-        mode = leaf.get("mode", "auto")
-        if mode == "fit":
+        if leaf["mode"] == "fit":
             resolved.append(_fit_segment(width, height, s0, s1))
-        elif mode == "split":
+        elif leaf["mode"] == "split":
             resolved.append(_split_segment(width, height, s0, s1, leaf))
-        elif mode == "manual":
+        elif leaf["mode"] == "manual":
             resolved.append(_manual_segment(width, height, ratio, leaf, s0, s1))
         else:
             resolved.extend(slice_crop_path(auto_base, s0, s1))
