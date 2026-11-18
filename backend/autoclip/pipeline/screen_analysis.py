@@ -44,7 +44,7 @@ class ScreenSegmentHint:
     recommended_framing: dict[str, Any]
     confidence: float
     reason: str
-    caption_clearance_y: float
+    caption_clearance_y: float | None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -59,6 +59,8 @@ class ScreenAnalysisResult:
     sampled_frames: int
     cuts_detected: list[float]
     segments: list[ScreenSegmentHint]
+    scenes: list[dict[str, Any]]
+    cut_frame_pairs: list[dict[str, float]]
     recommended_framing: dict[str, Any]
     overall_confidence: float
     notes: list[str]
@@ -71,6 +73,8 @@ class ScreenAnalysisResult:
             "sampled_frames": self.sampled_frames,
             "cuts_detected": [round(t, 3) for t in self.cuts_detected],
             "segments": [s.to_dict() for s in self.segments],
+            "scenes": self.scenes,
+            "cut_frame_pairs": self.cut_frame_pairs,
             "recommended_framing": self.recommended_framing,
             "overall_confidence": round(self.overall_confidence, 3),
             "notes": self.notes,
@@ -190,12 +194,7 @@ def _make_split_panels(
 def _merge_cut_times(cuts: list[float], duration_s: float) -> list[float]:
     if not cuts:
         return []
-    sorted_cuts = sorted(c for c in cuts if _MIN_SEGMENT_S <= c <= duration_s - _MIN_SEGMENT_S)
-    merged: list[float] = []
-    for c in sorted_cuts:
-        if not merged or c - merged[-1] >= _MIN_SEGMENT_S:
-            merged.append(c)
-    return merged
+    return sorted({c for c in cuts if 0 < c < duration_s})
 
 
 def _build_segment_hint(
@@ -305,7 +304,7 @@ def _build_segment_hint(
                     "Active screen region and speaker region are separated; "
                     "split keeps both visible."
                 ),
-                caption_clearance_y=0.16 if outside_roi[1] + outside_roi[3] > 0.72 else 0.86,
+                caption_clearance_y=None,
             )
 
     if roi is None or active_frac < 0.005:
@@ -357,7 +356,7 @@ def _build_segment_hint(
             source_end_s=src_end,
             clip_start_s=round(seg_clip_start, 4),
             clip_end_s=round(seg_clip_end, 4),
-            scene_type="scroll" if is_scroll else "terminal_or_code",
+            scene_type="scroll" if is_scroll else "uncertain",
             is_scroll=is_scroll,
             scroll_direction=scroll_dir,
             active_roi=roi_dict,
@@ -369,7 +368,7 @@ def _build_segment_hint(
                 "zoom": zoom,
             },
             confidence=0.82,
-            reason="Localized active terminal/content pane fits cleanly inside target crop.",
+            reason="Localized motion fits inside target crop; content type is unknown.",
             caption_clearance_y=clearance,
         )
 
@@ -378,7 +377,7 @@ def _build_segment_hint(
         source_end_s=src_end,
         clip_start_s=round(seg_clip_start, 4),
         clip_end_s=round(seg_clip_end, 4),
-        scene_type="scroll" if is_scroll else "terminal_or_code",
+        scene_type="scroll" if is_scroll else "uncertain",
         is_scroll=is_scroll,
         scroll_direction=scroll_dir,
         active_roi=roi_dict,
@@ -436,12 +435,12 @@ def analyze_clip_screens(
 
         adaptive = AdaptiveDetector(
             adaptive_threshold=2.6,
-            min_scene_len=max(2, int(round(eff_fps * _MIN_SEGMENT_S))),
+            min_scene_len=1,
             min_content_val=12.0,
         )
         hash_det = HashDetector(
             threshold=0.35,
-            min_scene_len=max(2, int(round(eff_fps * _MIN_SEGMENT_S))),
+            min_scene_len=1,
         )
 
         raw_cuts: list[float] = []
@@ -573,7 +572,7 @@ def analyze_clip_screens(
             seg_clip_start=seg_start,
             seg_clip_end=seg_end,
             clip_start_abs=start_s,
-            clip_end_abs=end_s,
+            clip_end_abs=clip_end,
             pairs=seg_pairs,
             src_w=src_w,
             src_h=src_h,
@@ -600,7 +599,11 @@ def analyze_clip_screens(
                 recommended_framing=prev.recommended_framing,
                 confidence=round((prev.confidence + seg.confidence) / 2.0, 3),
                 reason=prev.reason,
-                caption_clearance_y=min(prev.caption_clearance_y, seg.caption_clearance_y),
+                caption_clearance_y=(
+                    min(prev.caption_clearance_y, seg.caption_clearance_y)
+                    if prev.caption_clearance_y is not None and seg.caption_clearance_y is not None
+                    else None
+                ),
             )
         else:
             collapsed.append(seg)
@@ -625,7 +628,9 @@ def analyze_clip_screens(
     overall_conf = float(np.mean([s.confidence for s in collapsed])) if collapsed else 0.25
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
     notes: list[str] = [
-        "Advisory CPU analysis only; verify framing visually with inspection frames before saving."
+        "Cuts are sampled estimates and may be missed; inspect the surrounding video.",
+        "Motion does not identify semantic content. Verify framing and captions visually.",
+        "Split caption clearance is unknown in output coordinates; inspect the composed output.",
     ]
     if overall_conf < 0.6:
         notes.append("Low confidence; defaulted uncertain regions to fit blur.")
@@ -638,6 +643,25 @@ def analyze_clip_screens(
         sampled_frames=sampled_count,
         cuts_detected=[round(start_s + c, 3) for c in cuts],
         segments=collapsed,
+        scenes=[
+            {
+                **segment.to_dict(),
+                "short_scene": segment.clip_end_s - segment.clip_start_s < _MIN_SEGMENT_S,
+            }
+            for segment in segments
+        ],
+        cut_frame_pairs=[
+            {
+                "cut_source_s": round(start_s + cut, 4),
+                "before_source_s": round(
+                    start_s + max((boundaries[i] + cut) / 2, cut - 1 / eff_fps), 4
+                ),
+                "after_source_s": round(
+                    start_s + min((cut + boundaries[i + 2]) / 2, cut + 1 / eff_fps), 4
+                ),
+            }
+            for i, cut in enumerate(cuts)
+        ],
         recommended_framing=top_framing,
         overall_confidence=overall_conf,
         notes=notes,

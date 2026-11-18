@@ -297,11 +297,21 @@ def test_stdio_inspection_images_and_revision_options():
             size = int(self.headers.get("Content-Length", "0"))
             self.rfile.read(size)
             image = {"mime_type": "image/png", "data_base64": "aGVsbG8="}
-            self.reply(
-                {"frames": [{"source_image": image}]}
-                if self.path.endswith("frames")
-                else {"image": image}
-            )
+            if self.path.endswith("analyze-screen"):
+                self.reply(
+                    {
+                        "scenes": [{"short_scene": True}],
+                        "cut_frame_pairs": [
+                            {"cut_source_s": 1.0, "before_source_s": 0.9, "after_source_s": 1.1}
+                        ],
+                    }
+                )
+            else:
+                self.reply(
+                    {"frames": [{"source_image": image}]}
+                    if self.path.endswith("frames")
+                    else {"image": image}
+                )
 
         def reply(self, data):
             self.send_response(200)
@@ -338,6 +348,9 @@ def test_stdio_inspection_images_and_revision_options():
                 assert not result.isError
                 result = await session.call_tool("inspection_analyze_screen", {"clip_id": "c"})
                 assert not result.isError
+                payload = json.loads(result.content[0].text)
+                assert payload["scenes"][0]["short_scene"]
+                assert payload["cut_frame_pairs"][0]["before_source_s"] == 0.9
 
     try:
         asyncio.run(run())

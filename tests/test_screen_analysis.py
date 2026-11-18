@@ -215,6 +215,8 @@ def test_api_analyze_screen_endpoint(autoclip_home, monkeypatch, tmp_path):
         assert data["recommended_framing"]["mode"] in ("manual", "fit", "split", "slices", "auto")
         assert data["elapsed_ms"] >= 0.0
         assert data["sampled_frames"] >= 4
+    assert len(data["scenes"]) == len(data["cuts_detected"]) + 1
+    assert len(data["cut_frame_pairs"]) == len(data["cuts_detected"])
 
 
 @pytest.mark.slow
@@ -268,3 +270,83 @@ def test_segment_boundaries_do_not_exceed_precise_source_end():
         crop_path=None,
     )
     assert hint.source_end_s <= 5.99996
+
+
+def test_analysis_without_end_uses_video_duration(tmp_path):
+    from autoclip.pipeline.screen_analysis import analyze_clip_screens
+
+    frame = np.full((120, 160, 3), 32, dtype=np.uint8)
+    video = _write_synthetic_video(tmp_path / "duration.mp4", [frame] * 20)
+    result = analyze_clip_screens(video)
+    assert result.segments[-1].source_end_s == pytest.approx(2.0)
+
+
+def test_short_and_edge_cut_times_are_preserved():
+    from autoclip.pipeline.screen_analysis import _merge_cut_times
+
+    assert _merge_cut_times([0.2, 1.45, 2.0, 3.9], 4.0) == [0.2, 1.45, 2.0, 3.9]
+
+
+def test_scene_boundaries_and_frame_pairs_are_not_collapsed(tmp_path):
+    from autoclip.pipeline.screen_analysis import analyze_clip_screens
+
+    rng = np.random.default_rng(11)
+    images = [rng.integers(0, 256, (120, 160, 3), dtype=np.uint8) for _ in range(4)]
+    frames = [images[0]] * 4 + [images[1]] * 25 + [images[2]] * 15 + [images[3]] * 6
+    video = _write_synthetic_video(tmp_path / "cuts.mp4", frames, fps=20)
+    result = analyze_clip_screens(video, sample_fps=6)
+    data = result.to_dict()
+    assert len(data["scenes"]) == len(data["cuts_detected"]) + 1
+    assert len(data["cut_frame_pairs"]) == len(data["cuts_detected"])
+    assert len(data["scenes"]) == 4
+    assert data["scenes"][1]["clip_end_s"] - data["scenes"][1]["clip_start_s"] == pytest.approx(
+        1.25, abs=0.2
+    )
+    assert data["scenes"][2]["short_scene"]
+    assert data["scenes"][0]["short_scene"] and data["scenes"][-1]["short_scene"]
+    assert len(result.segments) < len(data["scenes"])
+    for pair in data["cut_frame_pairs"]:
+        assert 0 <= pair["before_source_s"] < pair["cut_source_s"] < pair["after_source_s"] < 2.5
+    assert all(scene["scene_type"] != "terminal_or_code" for scene in data["scenes"])
+
+
+def test_split_caption_clearance_is_unknown_without_output_geometry(monkeypatch):
+    from autoclip.pipeline import screen_analysis as sa
+
+    monkeypatch.setattr(
+        sa, "_crop_box_norm_at", lambda *args: (Strategy.TRACK, (0.7, 0.2, 0.2, 0.5))
+    )
+    monkeypatch.setattr(sa, "_extract_roi_from_mask", lambda mask: ((0.05, 0.05, 0.3, 0.3), 0.1))
+    pair = sa._PairSample(0, 0.3, np.ones((120, 160), dtype=np.uint8), 0.1, 1.0, False, 0, 0.1)
+    hint = sa._build_segment_hint(
+        seg_clip_start=0,
+        seg_clip_end=1,
+        clip_start_abs=0,
+        clip_end_abs=1,
+        pairs=[pair],
+        src_w=160,
+        src_h=120,
+        ratio="9:16",
+        crop_path=None,
+    )
+    assert hint.recommended_mode == "split"
+    assert hint.caption_clearance_y is None
+
+
+def test_motion_without_speaker_evidence_is_not_labeled_terminal(monkeypatch):
+    from autoclip.pipeline import screen_analysis as sa
+
+    monkeypatch.setattr(sa, "_extract_roi_from_mask", lambda mask: ((0.05, 0.05, 0.3, 0.3), 0.1))
+    pair = sa._PairSample(0, 0.3, np.ones((120, 160), dtype=np.uint8), 0.1, 1.0, False, 0, 0.1)
+    hint = sa._build_segment_hint(
+        seg_clip_start=0,
+        seg_clip_end=1,
+        clip_start_abs=0,
+        clip_end_abs=1,
+        pairs=[pair],
+        src_w=160,
+        src_h=120,
+        ratio="9:16",
+        crop_path=None,
+    )
+    assert hint.scene_type == "uncertain"
