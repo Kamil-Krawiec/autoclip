@@ -776,7 +776,10 @@ def test_frame_override_replaces_saved_framing_without_mutation(
         frame = response.json()["frames"][0]
         assert frame["framing_mode"] == mode
         assert frame["face_caption_collision"]["status"] == "unknown"
-        assert frame["source_region"]["status"] == ("unknown" if mode == "split" else "known")
+        assert frame["source_region"]["status"] == "known"
+        if mode == "split":
+            assert frame["source_region"]["clipped_fraction"] == 0
+            assert len(frame["source_region"]["visible_source_rects"]) == 2
         if mode == "fit":
             assert frame["source_region"]["clipped_fraction"] == 0
         if mode in ("auto", "manual"):
@@ -910,3 +913,65 @@ def test_non_composed_frame_has_unknown_source_region(
     response = inspection_app.post(f"/api/clips/{clip.id}/inspection/frames", json=payload)
     assert response.status_code == 200, response.text
     assert response.json()["frames"][0]["source_region"]["status"] == "unknown"
+
+
+@pytest.mark.parametrize(
+    "panels,rects,clipped",
+    [
+        (None, [(0, 0, 50, 100), (50, 0, 50, 100)], 0),
+        (
+            [
+                {"x": 0, "y": 0, "width": 0.5, "height": 0.5},
+                {"x": 0.5, "y": 0.5, "width": 0.5, "height": 0.5},
+            ],
+            [(0, 0, 50, 50), (50, 50, 50, 50)],
+            0.5,
+        ),
+        (
+            [
+                {"x": 0, "y": 0, "width": 0.6, "height": 1},
+                {"x": 0.4, "y": 0, "width": 0.6, "height": 1},
+            ],
+            [(0, 0, 60, 100), (40, 0, 60, 100)],
+            0,
+        ),
+        (
+            [
+                {"x": 0.013, "y": 0.017, "width": 0.517, "height": 0.537},
+                {"x": 0.6, "y": 0.6, "width": 0.2, "height": 0.2},
+            ],
+            [(0, 0, 50, 52), (60, 60, 20, 20)],
+            0.7,
+        ),
+    ],
+)
+def test_split_source_coverage(panels, rects, clipped):
+    from autoclip.pipeline.reframe.croppath import CropPath, CropSegment
+    from autoclip.pipeline.visual_inspection import source_region_diagnostics
+
+    split = CropSegment(1, 2, 100, 100, split=True, split_panels=panels)
+    fit = CropSegment(0, 1, 100, 100, fit=True)
+    path = CropPath(100, 100, [fit, split])
+    assert source_region_diagnostics(path, 0.5)["visible_source_rect"]["width"] == 100
+    result = source_region_diagnostics(path, 1)
+    assert [
+        tuple(r[k] for k in ("x", "y", "width", "height")) for r in result["visible_source_rects"]
+    ] == rects
+    assert result["clipped_fraction"] == pytest.approx(clipped)
+
+
+@pytest.mark.parametrize(
+    "panels",
+    [
+        [],
+        [{"x": 0, "y": 0, "width": 1, "height": 1}],
+        [{"x": float("nan"), "y": 0, "width": 0.5, "height": 1}] * 2,
+        [{"x": 0, "y": 0, "width": 0, "height": 1}] * 2,
+    ],
+)
+def test_split_source_coverage_rejects_invalid_panels(panels):
+    from autoclip.pipeline.reframe.croppath import CropPath, CropSegment
+    from autoclip.pipeline.visual_inspection import source_region_diagnostics
+
+    path = CropPath(100, 100, [CropSegment(0, 1, 100, 100, split=True, split_panels=panels)])
+    assert source_region_diagnostics(path, 0)["status"] == "unknown"

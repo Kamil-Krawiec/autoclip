@@ -47,8 +47,9 @@ export function FramingComparison({ clip, playheadSourceS, signature, disabled }
         const image = result.frames[0]?.composed_image
         if (!image) throw new Error(`No frame returned for ${label}.`)
         const frame = result.frames[0]
+        const panels = frame.source_region.visible_source_rects?.map((r, i) => `Panel ${i + 1}: ${r.x}, ${r.y}, ${r.width} × ${r.height} px`).join('; ')
         const region = frame.source_region.status === 'known' && frame.source_region.clipped_fraction !== undefined
-          ? `${(frame.source_region.clipped_fraction * 100).toFixed(1)}% estimated source area outside foreground crop`
+          ? `${(frame.source_region.clipped_fraction * 100).toFixed(1)}% estimated source area outside visible crop(s)${panels ? `. ${panels} (source coordinates)` : ''}`
           : `Source clipping unknown: ${frame.source_region.reason ?? 'geometry unavailable'}`
         results.push({ label, url: `data:${image.mime_type};base64,${image.data_base64}`, region,
           collision: `Face/caption collision unknown: ${frame.face_caption_collision.reason ?? 'evidence unavailable'}` })

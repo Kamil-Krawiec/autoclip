@@ -741,7 +741,43 @@ def source_region_diagnostics(crop_path: CropPath, clip_t: float) -> dict[str, A
         return unknown
     segment, _ = segment_at_clip_time(crop_path, clip_t)
     if segment.split:
-        return {"status": "unknown", "reason": "Split panel coverage is not calculated."}
+        panels = segment.split_panels
+        if panels is None:
+            if width % 2:
+                return {"status": "unknown", "reason": "Odd-width default split is unsupported."}
+            rects = [(0, 0, width // 2, height), (width // 2, 0, width // 2, height)]
+        else:
+            if len(panels) != 2 or width < 2 or height < 2:
+                return unknown
+            rects = []
+            for panel in panels:
+                try:
+                    x, y, w, h = (panel[k] for k in ("x", "y", "width", "height"))
+                    if not all(math.isfinite(v) for v in (x, y, w, h)) or not (
+                        0 <= x < 1
+                        and 0 <= y < 1
+                        and 0 < w <= 1
+                        and 0 < h <= 1
+                        and x + w <= 1
+                        and y + h <= 1
+                    ):
+                        return unknown
+                    crop_w, crop_h, px, py = export_module._split_panel_pixels(panel, width, height)
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    return unknown
+                rects.append((px, py, crop_w, crop_h))
+        (x1, y1, w1, h1), (x2, y2, w2, h2) = rects
+        overlap = max(0, min(x1 + w1, x2 + w2) - max(x1, x2)) * max(
+            0, min(y1 + h1, y2 + h2) - max(y1, y2)
+        )
+        return {
+            "status": "known",
+            "visible_source_rects": [
+                {"x": x, "y": y, "width": w, "height": h} for x, y, w, h in rects
+            ],
+            "source_size": {"width": width, "height": height},
+            "clipped_fraction": 1.0 - (w1 * h1 + w2 * h2 - overlap) / (width * height),
+        }
     if segment.fit:
         x, y, crop_w, crop_h = 0.0, 0.0, width, height
     else:
