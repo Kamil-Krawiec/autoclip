@@ -350,3 +350,87 @@ def test_motion_without_speaker_evidence_is_not_labeled_terminal(monkeypatch):
         crop_path=None,
     )
     assert hint.scene_type == "uncertain"
+
+
+@pytest.mark.parametrize("fps", [29.97, 23.976])
+def test_fractional_fps_single_cut_has_no_duplicate_scenes(tmp_path, fps):
+    from autoclip.pipeline.screen_analysis import analyze_clip_screens
+
+    dark = np.zeros((120, 160, 3), dtype=np.uint8)
+    light = np.full_like(dark, 255)
+    video = _write_synthetic_video(
+        tmp_path / f"fractional-{fps}.mp4",
+        [dark] * round(2 * fps) + [light] * round(2 * fps),
+        fps=fps,
+    )
+    data = analyze_clip_screens(video, sample_fps=3).to_dict()
+    assert len(data["cuts_detected"]) == 1
+    assert len(data["scenes"]) == 2
+    assert all(s["clip_end_s"] > s["clip_start_s"] for s in data["scenes"])
+    p = data["cut_frame_pairs"][0]
+    assert p["before_source_s"] < p["cut_source_s"] < p["after_source_s"]
+
+
+def test_one_sample_scene_does_not_use_cross_cut_motion(tmp_path):
+    from autoclip.pipeline.screen_analysis import analyze_clip_screens
+
+    dark = np.zeros((120, 160, 3), dtype=np.uint8)
+    card = np.full_like(dark, 255)
+    card[:, :60] = 0
+    light = dark.copy()
+    video = _write_synthetic_video(
+        tmp_path / "brief.mp4", [dark] * 30 + [card] * 10 + [light] * 50, fps=30
+    )
+    scenes = analyze_clip_screens(video, sample_fps=3).to_dict()["scenes"]
+    short = min(scenes, key=lambda s: s["clip_end_s"] - s["clip_start_s"])
+    assert short["recommended_mode"] == "fit"
+    assert short["scene_type"] == "uncertain"
+    assert short["confidence"] <= 0.2
+
+
+def test_cut_pair_does_not_round_past_fractional_clip_end(tmp_path, monkeypatch):
+    from autoclip.pipeline import screen_analysis as sa
+    from autoclip.pipeline.visual_inspection import map_timestamp
+
+    dark = np.zeros((120, 160, 3), dtype=np.uint8)
+    light = np.full_like(dark, 255)
+    video = _write_synthetic_video(tmp_path / "edge.mp4", [dark] * 58 + [light] * 2, fps=10)
+    end = 5.99996
+    monkeypatch.setattr(sa, "_merge_cut_times", lambda cuts, duration: [duration - 0.00002])
+    data = sa.analyze_clip_screens(video, start_s=1, end_s=end, sample_fps=10).to_dict()
+    p = data["cut_frame_pairs"][-1]
+    assert 1 <= p["before_source_s"] < p["cut_source_s"] < end
+    assert p["after_source_s"] is None
+    for t in (p["before_source_s"],):
+        map_timestamp(
+            t,
+            timeline="source",
+            clip_start_s=1,
+            clip_end_s=end,
+            windows=[(0, end - 1)],
+            source_duration_s=end,
+        )
+
+
+def test_scroll_with_inserted_card_keeps_only_real_cuts(tmp_path):
+    from autoclip.pipeline.screen_analysis import analyze_clip_screens
+
+    canvas = np.full((1800, 640, 3), 245, dtype=np.uint8)
+    for row in range(35):
+        y = 30 + row * 48
+        cv2.putText(
+            canvas,
+            f"Documentation section {row} code",
+            (30, y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (25, 25, 25),
+            2,
+        )
+        cv2.rectangle(canvas, (30, y + 8), (580, y + 12), (180, 190, 210), -1)
+    frames = [canvas[i * 18 : i * 18 + 360].copy() for i in range(40)]
+    card = np.full((360, 640, 3), 30, dtype=np.uint8)
+    frames[15:25] = [card] * 10
+    video = _write_synthetic_video(tmp_path / "scroll-card.mp4", frames, fps=10)
+    result = analyze_clip_screens(video, sample_fps=3)
+    assert len(result.cuts_detected) == 2

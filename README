@@ -311,7 +311,9 @@ requires explicit consent through the tool argument.
 Screen analysis returns unmerged `scenes` and `cut_frame_pairs` separately from
 framing recommendations. For each detected cut, request `before_source_s` and
 `after_source_s` with `inspection_frames` using `timeline: "source"` and
-`target: "source"`. Inspect both images and surrounding footage, including short
+`target: "source"`. A timestamp may be `null` when the source boundary or
+frame extraction end guard prevents a usable frame on that side; do not request
+that value and inspect surrounding footage instead. Inspect both available images and surrounding footage, including short
 scenes flagged in the response. These timestamps are sampled estimates: cuts can
 be missed or imprecise, and motion does not identify the most important content.
 Split caption clearance is unknown and requires visual review. After editing,

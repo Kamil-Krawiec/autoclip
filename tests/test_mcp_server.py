@@ -302,7 +302,7 @@ def test_stdio_inspection_images_and_revision_options():
                     {
                         "scenes": [{"short_scene": True}],
                         "cut_frame_pairs": [
-                            {"cut_source_s": 1.0, "before_source_s": 0.9, "after_source_s": 1.1}
+                            {"cut_source_s": 1.0, "before_source_s": 0.9, "after_source_s": None}
                         ],
                     }
                 )
@@ -351,6 +351,7 @@ def test_stdio_inspection_images_and_revision_options():
                 payload = json.loads(result.content[0].text)
                 assert payload["scenes"][0]["short_scene"]
                 assert payload["cut_frame_pairs"][0]["before_source_s"] == 0.9
+                assert payload["cut_frame_pairs"][0]["after_source_s"] is None
 
     try:
         asyncio.run(run())

@@ -19,7 +19,7 @@ from scenedetect import FrameTimecode
 from scenedetect.detectors import AdaptiveDetector, HashDetector
 
 from .reframe.croppath import CropPath, Strategy, target_crop_size
-from .visual_inspection import InspectionError, InspectionValidationError
+from .visual_inspection import _SEEK_END_GUARD_S, InspectionError, InspectionValidationError
 
 SceneKind = Literal["speaker", "terminal_or_code", "scroll", "mixed_screen_pip", "uncertain"]
 
@@ -60,7 +60,7 @@ class ScreenAnalysisResult:
     cuts_detected: list[float]
     segments: list[ScreenSegmentHint]
     scenes: list[dict[str, Any]]
-    cut_frame_pairs: list[dict[str, float]]
+    cut_frame_pairs: list[dict[str, float | None]]
     recommended_framing: dict[str, Any]
     overall_confidence: float
     notes: list[str]
@@ -485,9 +485,9 @@ def analyze_clip_screens(
 
             tc = FrameTimecode(sampled_count, fps=eff_fps)
             for cut_tc in adaptive.process_frame(tc, small):
-                raw_cuts.append(cut_tc.get_seconds())
+                raw_cuts.append(cut_tc.frame_num * step_frames / native_fps)
             for cut_tc in hash_det.process_frame(tc, small):
-                raw_cuts.append(cut_tc.get_seconds())
+                raw_cuts.append(cut_tc.frame_num * step_frames / native_fps)
 
             gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
             hist = cv2.calcHist([gray], [0], None, [32], [0, 256])
@@ -531,19 +531,16 @@ def analyze_clip_screens(
 
         end_tc = FrameTimecode(max(0, sampled_count), fps=eff_fps)
         for cut_tc in adaptive.post_process(end_tc):
-            raw_cuts.append(cut_tc.get_seconds())
+            raw_cuts.append(cut_tc.frame_num * step_frames / native_fps)
     finally:
         cap.release()
 
     # Suppress false cuts caused by smooth scrolling
     filtered_cuts: list[float] = []
     for cut_t in raw_cuts:
-        near = [p for p in pairs if abs(p.t_rel - cut_t) <= 0.7]
-        if near:
-            scroll_count = sum(1 for p in near if p.is_scroll)
-            min_corr = min(p.hist_corr for p in near)
-            if scroll_count >= max(1, len(near) // 2) and min_corr > 0.72:
-                continue
+        nearest = min(pairs, key=lambda p: abs(p.t_rel - cut_t), default=None)
+        if nearest is not None and nearest.is_scroll and nearest.hist_corr > 0.72:
+            continue
         filtered_cuts.append(cut_t)
 
     # Also detect strong structural jump if AdaptiveDetector missed a dark->dark cut
@@ -566,8 +563,6 @@ def analyze_clip_screens(
                 else p.t_rel <= seg_end + 1e-6
             )
         ]
-        if not seg_pairs:
-            seg_pairs = [p for p in pairs if seg_start <= p.t_rel <= seg_end]
         hint = _build_segment_hint(
             seg_clip_start=seg_start,
             seg_clip_end=seg_end,
@@ -635,6 +630,27 @@ def analyze_clip_screens(
     if overall_conf < 0.6:
         notes.append("Low confidence; defaulted uncertain regions to fit blur.")
 
+    cut_frame_pairs = []
+    safe_source_end = min(clip_end, max(0.0, total_dur - _SEEK_END_GUARD_S))
+    for i, cut in enumerate(cuts):
+        absolute_cut = start_s + cut
+        before = start_s + max((boundaries[i] + cut) / 2, cut - 1 / eff_fps)
+        after = min(
+            start_s + min((cut + boundaries[i + 2]) / 2, cut + 1 / eff_fps),
+            safe_source_end,
+        )
+        cut_frame_pairs.append(
+            {
+                "cut_source_s": absolute_cut,
+                "before_source_s": before
+                if before < absolute_cut and before <= safe_source_end
+                else None,
+                "after_source_s": after if absolute_cut < after else None,
+            }
+        )
+    if any(p["before_source_s"] is None or p["after_source_s"] is None for p in cut_frame_pairs):
+        notes.append("A cut is too close to a source boundary for a usable frame on both sides.")
+
     return ScreenAnalysisResult(
         source_width=src_w,
         source_height=src_h,
@@ -650,18 +666,7 @@ def analyze_clip_screens(
             }
             for segment in segments
         ],
-        cut_frame_pairs=[
-            {
-                "cut_source_s": round(start_s + cut, 4),
-                "before_source_s": round(
-                    start_s + max((boundaries[i] + cut) / 2, cut - 1 / eff_fps), 4
-                ),
-                "after_source_s": round(
-                    start_s + min((cut + boundaries[i + 2]) / 2, cut + 1 / eff_fps), 4
-                ),
-            }
-            for i, cut in enumerate(cuts)
-        ],
+        cut_frame_pairs=cut_frame_pairs,
         recommended_framing=top_framing,
         overall_confidence=overall_conf,
         notes=notes,
