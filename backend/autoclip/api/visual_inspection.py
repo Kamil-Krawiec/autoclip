@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+from dataclasses import replace
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, HTTPException
@@ -20,6 +21,7 @@ from pydantic import (
 from ..db import store
 from ..pipeline import screen_analysis as sa
 from ..pipeline import visual_inspection as vi
+from .schemas import LeafFramingIn
 
 router = APIRouter(prefix="/api", tags=["visual-inspection"])
 
@@ -47,6 +49,7 @@ class FramesRequestIn(BaseModel):
     jpeg_quality: int = Field(default=vi.DEFAULT_JPEG_QUALITY, ge=40, le=95, strict=True)
     ratio: Literal["9:16", "1:1", "16:9"] | None = None
     style: str | None = None
+    framing: LeafFramingIn | None = None
 
     @field_validator("timestamps")
     @classmethod
@@ -55,6 +58,8 @@ class FramesRequestIn(BaseModel):
 
     @model_validator(mode="after")
     def _check_export_target(self) -> FramesRequestIn:
+        if self.framing is not None and self.target not in ("composed", "both"):
+            raise ValueError("framing is only allowed for composed frames.")
         if self.target == "export" and not self.export_id:
             raise ValueError("export_id is required when target='export'.")
         if self.target != "export" and self.export_id is not None:
@@ -147,7 +152,7 @@ async def get_inspection_revision(
 
 
 def _extract_frames_sync(clip_id: str, payload: FramesRequestIn) -> dict[str, Any]:
-    clip, _, source, edit, crop_path, style, ratio, words, revision = vi.load_clip_render_context(
+    clip, job, source, edit, crop_path, style, ratio, words, revision = vi.load_clip_render_context(
         clip_id, ratio_override=payload.ratio, style_override=payload.style
     )
     if not source.has_video:
@@ -155,6 +160,15 @@ def _extract_frames_sync(clip_id: str, payload: FramesRequestIn) -> dict[str, An
 
     exports = store.list_exports(clip_id)
     freshness = vi.assess_export_freshness(clip_id, revision, exports)
+    if payload.framing is not None:
+        framing = payload.framing.model_dump()
+        preview_edit = replace(
+            edit, ratio=ratio, framing=None if framing["mode"] == "auto" else framing
+        )
+        cached = vi.JobWorkspace(job.id).crop_path(clip.id)
+        auto_path = vi.CropPath.load(cached) if cached.exists() else None
+        crop_path = vi.resolve_crop_path(source, clip, job, preview_edit, auto_path)
+        edit = preview_edit
     windows = vi.retained_windows_for_clip(clip, edit)
     summary = vi.timeline_summary(clip, edit)
     retained_duration_s = float(summary["retained_duration_s"])

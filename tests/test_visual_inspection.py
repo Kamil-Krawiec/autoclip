@@ -696,3 +696,40 @@ def test_export_endpoint_records_snapshot_and_edit_makes_it_stale(
     store.patch_clip_edit(clip.id, {"burn_captions": False})
     revision = inspection_app.get(f"/api/clips/{clip.id}/inspection/revision")
     assert revision.json()["export_freshness"]["status"] == "stale"
+
+
+def test_frame_framing_override_is_transient(inspection_app, sample_clip, monkeypatch):
+    from autoclip.pipeline import visual_inspection as vi
+
+    _, _, clip, _ = sample_clip
+    seen = []
+
+    def render(**kwargs):
+        seen.append(kwargs["crop_path"].segments[0])
+        return vi.EncodedImage("image/jpeg", 1, 1, b"frame")
+
+    monkeypatch.setattr(vi, "extract_composed_frame", render)
+    url = f"/api/clips/{clip.id}/inspection/frames"
+    revision_before = inspection_app.get(f"/api/clips/{clip.id}/inspection/revision").json()
+    for framing in (
+        {"mode": "auto"},
+        {"mode": "fit"},
+        {"mode": "manual", "center_x": 0.5, "center_y": 0.5, "zoom": 2.0},
+        {"mode": "split"},
+    ):
+        response = inspection_app.post(
+            url, json={"timestamps": [1], "target": "composed", "framing": framing}
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["current_revision"] == revision_before["current_revision"]
+    assert seen[1].fit
+    assert seen[2].width < seen[0].width
+    assert seen[3].split
+    assert inspection_app.get(f"/api/clips/{clip.id}/inspection/revision").json() == revision_before
+    assert store.get_clip_edit(clip.id) is None
+    assert (
+        inspection_app.post(
+            url, json={"timestamps": [1], "target": "source", "framing": {"mode": "fit"}}
+        ).status_code
+        == 422
+    )

@@ -22,6 +22,7 @@ import { CaptionLayoutEditor } from '../components/CaptionLayoutEditor'
 import { ClipPlayer, type FramingGeometry, type PanRequest } from '../components/ClipPlayer'
 import { ErrorNote } from '../components/ErrorNote'
 import { ExactPreview } from '../components/ExactPreview'
+import { FramingComparison } from '../components/FramingComparison'
 import type { SplitPanels } from '../components/SplitFramingEditor'
 import { SliceFramingEditor } from '../components/SliceFramingEditor'
 
@@ -542,6 +543,12 @@ export function Review() {
                     panRequest={panRequest}
                   />
                 )}
+                <FramingComparison
+                  clip={selected}
+                  playheadSourceS={playheadSourceS}
+                  signature={savedPreviewSignature}
+                  disabled={previewDisabled}
+                />
                 <ExactPreview
                   clip={selected}
                   playheadSourceS={playheadSourceS}
