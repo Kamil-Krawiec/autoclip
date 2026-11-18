@@ -779,6 +779,16 @@ def test_frame_override_replaces_saved_framing_without_mutation(
         assert frame["source_region"]["status"] == ("unknown" if mode == "split" else "known")
         if mode == "fit":
             assert frame["source_region"]["clipped_fraction"] == 0
+        if mode in ("auto", "manual"):
+            sizes = {
+                "9:16": ((608, 1080), (304, 540)),
+                "1:1": ((1080, 1080), (540, 540)),
+                "16:9": ((1920, 1080), (960, 540)),
+            }
+            w, h = sizes[ratio][mode == "manual"]
+            assert frame["source_region"]["clipped_fraction"] == pytest.approx(
+                1 - w * h / (1920 * 1080)
+            )
         assert frame["source_image"] and frame["composed_image"]
         assert seen[-1]["ratio"] == ratio
         assert store.get_clip_edit(clip.id) == before
@@ -818,3 +828,85 @@ def test_source_region_diagnostics_geometry_and_boundaries():
     assert source_region_diagnostics(CropPath(100, 100, []), 0)["status"] == "unknown"
     crop.keyframes = []
     assert source_region_diagnostics(path, 0)["status"] == "unknown"
+
+
+@pytest.mark.parametrize("width,height", [(None, 1080), (1920, None), (0, 1080), (1920, -1)])
+def test_source_region_requires_actual_source_dimensions(
+    inspection_app, sample_clip, monkeypatch, width, height
+):
+    from dataclasses import replace
+
+    from autoclip.pipeline import visual_inspection as vi
+
+    _, _, clip, _ = sample_clip
+    original = vi.load_clip_render_context
+
+    def load(*args, **kwargs):
+        context = list(original(*args, **kwargs))
+        context[2] = replace(context[2], width=width, height=height)
+        return tuple(context)
+
+    monkeypatch.setattr(vi, "load_clip_render_context", load)
+    monkeypatch.setattr(
+        vi, "extract_composed_frame", lambda **kwargs: vi.EncodedImage("image/jpeg", 1, 1, b"x")
+    )
+    response = inspection_app.post(
+        f"/api/clips/{clip.id}/inspection/frames",
+        json={"timestamps": [1], "target": "composed", "framing": {"mode": "auto"}},
+    )
+    assert response.status_code == 200, response.text
+    region = response.json()["frames"][0]["source_region"]
+    assert region["status"] == "unknown"
+    assert "dimensions" in region["reason"].lower()
+
+
+@pytest.mark.parametrize("x,y,expected", [(-10, -20, (0, 0)), (200, 300, (50, 40))])
+def test_source_region_clamps_crop_coordinates(x, y, expected):
+    from autoclip.pipeline.reframe.croppath import CropKeyframe, CropPath, CropSegment
+    from autoclip.pipeline.visual_inspection import source_region_diagnostics
+
+    path = CropPath(100, 100, [CropSegment(0, 1, 50, 60, [CropKeyframe(0, x, y)])])
+    rect = source_region_diagnostics(path, 0)["visible_source_rect"]
+    assert (rect["x"], rect["y"]) == expected
+
+
+@pytest.mark.parametrize(
+    "width,height,x,y",
+    [
+        (0, 50, 0, 0),
+        (-1, 50, 0, 0),
+        (101, 50, 0, 0),
+        (50, 101, 0, 0),
+        (50, 0, 0, 0),
+        (50, 50, float("nan"), 0),
+        (50, 50, 0, float("nan")),
+    ],
+)
+def test_source_region_rejects_invalid_geometry(width, height, x, y):
+    from autoclip.pipeline.reframe.croppath import CropKeyframe, CropPath, CropSegment
+    from autoclip.pipeline.visual_inspection import source_region_diagnostics
+
+    path = CropPath(100, 100, [CropSegment(0, 1, width, height, [CropKeyframe(0, x, y)])])
+    assert source_region_diagnostics(path, 0)["status"] == "unknown"
+
+
+@pytest.mark.parametrize("target", ["source", "export"])
+def test_non_composed_frame_has_unknown_source_region(
+    inspection_app, sample_clip, monkeypatch, target
+):
+    from autoclip.pipeline import visual_inspection as vi
+
+    _, _, clip, source_path = sample_clip
+    store.create_export(Export(id="exp", clip_id=clip.id, path=str(source_path), ratio="9:16"))
+    monkeypatch.setattr(vi, "resolve_export_media_path", lambda record: source_path)
+    monkeypatch.setattr(
+        vi,
+        "extract_source_frame",
+        lambda *args, **kwargs: vi.EncodedImage("image/jpeg", 1, 1, b"x"),
+    )
+    payload = {"timestamps": [1], "target": target}
+    if target == "export":
+        payload["export_id"] = "exp"
+    response = inspection_app.post(f"/api/clips/{clip.id}/inspection/frames", json=payload)
+    assert response.status_code == 200, response.text
+    assert response.json()["frames"][0]["source_region"]["status"] == "unknown"
